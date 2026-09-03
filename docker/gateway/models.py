@@ -83,6 +83,7 @@ class TraceResult:
         }
 
 
+@dataclass
 class TaskResult:
     """异步回执的最终载荷（供 /tasks/{id} 与日志 push 复用）。"""
 
