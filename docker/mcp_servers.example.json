@@ -1,0 +1,17 @@
+[
+  {
+    "name": "example-stdio",
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+    "env": {}
+  },
+  {
+    "name": "example-http",
+    "type": "streamable_http",
+    "url": "http://my-mcp-server:9000/mcp",
+    "headers": {
+      "Authorization": "Bearer YOUR_TOKEN"
+    }
+  }
+]

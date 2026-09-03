@@ -43,6 +43,27 @@ LLM_API: str = os.environ.get("LLM_API", "chat")
 #  - 不要用 OPENAI_AGENTS_DISABLE_TRACING=1 去关（会同时阻断本地 Processor 事件）。
 
 # --------------------------------------------------------------------------- #
+# Skill 配置（skill-as-tool：读 hermes 开发的 skill SKILL.md）
+# --------------------------------------------------------------------------- #
+# skill 目录：运行时 volume 挂载宿主机 /home/ctyun/.hermes/skills/，改动热生效无需重建镜像。
+SKILLS_DIR: str = os.environ.get("SKILLS_DIR", "/srv/gateway/skills")
+# 启用的 skill 白名单；空列表 = 全部启用。
+SKILLS_ENABLED: list[str] = [
+    s.strip()
+    for s in os.environ.get("SKILLS_ENABLED", "").split(",")
+    if s.strip()
+]
+# skill scripts 运行超时（秒）
+SKILL_SCRIPT_TIMEOUT_S: float = float(os.environ.get("SKILL_SCRIPT_TIMEOUT_S", "120"))
+
+# --------------------------------------------------------------------------- #
+# MCP 工具配置（skill 配套的标准 MCP 服务器，独立提供，非 hermes）
+# 配置文件路径：JSON 数组，每项含 type(stdio/streamable_http)/name/command/args/env/url/headers。
+# 例见 docker/mcp_servers.example.json 与 docker/docker-compose.yml 挂载。
+# --------------------------------------------------------------------------- #
+MCP_CONFIG_PATH: str = os.environ.get("MCP_CONFIG_PATH", "/srv/gateway/mcp_servers.json")
+
+# --------------------------------------------------------------------------- #
 # 日志输出层（通用推送接口）
 #  - 全部落到业务系统。base_url 由代理层 ASGI 中间件在每次请求注入（见 middleware.py），
 #    业务方提供它自己的该端点即可，grep "业务侧自己对接" 见 ../../README.md#--

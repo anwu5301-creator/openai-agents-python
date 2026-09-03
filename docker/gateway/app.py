@@ -20,7 +20,7 @@ from . import config, logger, models as m
 from .middleware import TaskContextMiddleware
 from .log_sink_http import default_log_sink
 from .logger import set_log_sink
-from .runner import TaskPool
+from .runner import AgentConfig, TaskPool
 from .trace_bridge import BusinessLogProcessor
 
 app = FastAPI(title="openai-agents gateway", version="0.1.0")
@@ -61,7 +61,23 @@ async def startup() -> None:
     from agents.tracing import add_trace_processor
     add_trace_processor(BusinessLogProcessor())
 
-    _pool = TaskPool(slots=config.TASK_POOL_SLOTS)
+    # Skill 与 MCP 工具的全局组装（全局共享）：
+    #  - skills: 扫描 SKILLS_DIR 生成 list/load/run_skill_script 工具。
+    #  - mcp: 从 mcp_servers.json 构造 server 列表，每次 run 由 MCPServerManager 管理连接。
+    from .skill_tool import refresh_skill_registry, build_skill_tools
+    from .mcp_config import build_servers, load_mcp_config
+
+    refresh_skill_registry()
+    skill_tools = build_skill_tools()
+    mcp_server_list = build_servers(load_mcp_config(config.MCP_CONFIG_PATH))
+    agent_cfg = AgentConfig(skill_tools=skill_tools, mcp_server_list=mcp_server_list)
+    logger.log(
+        "info",
+        "agent_config_ready",
+        {"skills": len(skill_tools), "mcp_servers": len(mcp_server_list)},
+    )
+
+    _pool = TaskPool(agent_cfg=agent_cfg, slots=config.TASK_POOL_SLOTS)
     await _pool.start()
 
 

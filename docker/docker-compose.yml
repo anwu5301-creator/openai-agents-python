@@ -9,6 +9,9 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        # 国内构建可传 APT_MIRROR=mirrors.ustc.edu.cn / mirrors.aliyun.com；海外用默认官方源。
+        APT_MIRROR: ${APT_MIRROR:-}
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -22,5 +25,15 @@ services:
       LOG_SINK_URL: ${LOG_SINK_URL:-}
       # 存储
       DB_URL: sqlite:///./gateway.db
+      # Skill：volume 挂载宿主机 hermes skills 目录，改动热生效无需重建镜像
+      SKILLS_DIR: /srv/gateway/skills
+      # 启用的 skill 白名单（逗号分隔；空=全部）。如: SKILLS_ENABLED: lp-deploy-ops,lp-project-ops
+      SKILLS_ENABLED: ${SKILLS_ENABLED:-}
+      # MCP 工具配置（skill 配套的标准 MCP 服务器）
+      MCP_CONFIG_PATH: /srv/gateway/mcp_servers.json
     volumes:
       - ./data:/srv/gateway
+      # skill 目录：宿主机 hermes 的 skills 目录（按需改路径）
+      - ${HERMES_SKILLS_DIR:-/home/ctyun/.hermes/skills}:/srv/gateway/skills:ro
+      # MCP 服务器配置（见 ./mcp_servers.example.json）
+      - ./mcp_servers.json:/srv/gateway/mcp_servers.json:ro

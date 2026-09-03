@@ -159,3 +159,8 @@ tmp/
 # execplans
 plans/
 .vercel
+
+# Agent gateway runtime / secrets
+/docker/mcp_servers.json
+/docker/gateway.db
+/docker/data/

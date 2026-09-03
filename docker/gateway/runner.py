@@ -4,20 +4,31 @@
 - TaskPool 用有界 asyncio.Queue + worker 池消费待执行任务；提交立即入队返回 task_id。
 - 并发上限由 queue 大小（有界）与 worker 数共同约束，队列满则 429。
 - 状态迁移统一经 validate_transition，非法迁移抛错并记录。
+- Agent 组装：skills（list/load/run_skill_script 工具）与 MCP 服务器（active_servers）由
+  启动时注入的 AgentConfig 提供，所有任务全局共享（全局作用域）。
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass, field
 
 from agents import Agent, Runner
 
 from . import config, logger, models as m
 
 
-async def run_task(task_id: str) -> None:
-    """单任务执行：底层直接跑（时序见 courseware）。"""
+@dataclass
+class AgentConfig:
+    """agent 组装所需的全局上下文：skill 工具 + 待连接的 MCP server 列表。"""
+
+    skill_tools: list = field(default_factory=list)
+    mcp_server_list: list = field(default_factory=list)
+
+
+async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
+    """单任务执行：构造 agent（含 skill 工具与 MCP 服务器）并跑。"""
     task = await m.TaskModel.get_or_none(id=task_id)
     if task is None:
         return
@@ -31,22 +42,38 @@ async def run_task(task_id: str) -> None:
 
     # 构造 agent（业务侧在 config_json 里自定义 instructions/agent_name）
     cfg = task.config_json or {}
-    agent = Agent(
-        name=task.agent_name or cfg.get("agent_name") or "gateway-agent",
-        instructions=task.instructions or cfg.get("instructions") or "你是一个通用助手。",
-        model=config.LLM_MODEL,
-        tools=[],
-    )
+    tools = list((agent_cfg.skill_tools if agent_cfg else []))
+    instructions = task.instructions or cfg.get("instructions") or "你是一个通用助手。"
+    if tools:
+        instructions = (
+            instructions
+            + "\n\n你可使用以下技能工具（list_skills 查看可用技能）。"
+        )
+
+    async def _run_with_servers() -> "object":
+        """在 MCP 服务器连接窗口内构造 agent 并运行。
+
+        用 MCPServerManager 管理连接生命周期：只把连接成功的 server 挂给 agent，
+        并在本次 run 结束后清理连接，避免跨 run 泄漏。
+        """
+        from agents.mcp import MCPServerManager
+
+        server_list = agent_cfg.mcp_server_list if agent_cfg else []
+        async with MCPServerManager(server_list) as manager:
+            agent = Agent(
+                name=task.agent_name or cfg.get("agent_name") or "gateway-agent",
+                instructions=instructions,
+                model=config.LLM_MODEL,
+                tools=tools if tools else None,
+                mcp_servers=manager.active_servers if manager.active_servers else None,
+            )
+            return await Runner.run_async(agent, input=task.input_text or "")
 
     t0 = time.monotonic()
     error_detail: str | None = None
     output_text: str | None = None
     try:
-        # 这里可直接用 Runner.run_async；如需挂钩生命周期回调需走 AgentRunner.run() 起 run。
-        result = await Runner.run_async(
-            agent,
-            input=task.input_text or "",
-        )
+        result = await _run_with_servers()
         output_text = result.final_output
         logger.log("info", "agent_run_end", {"task_id": task_id, "runs_ms": _ms(t0)})
     except Exception as e:  # noqa: BLE001
@@ -77,9 +104,11 @@ class TaskPool:
 
     def __init__(
         self,
+        agent_cfg: AgentConfig | None = None,
         slots: int | None = None,
         queue_max: int | None = None,
     ) -> None:
+        self.agent_cfg = agent_cfg or AgentConfig()
         self.slots = slots or config.TASK_POOL_SLOTS
         self.queue_max = queue_max or config.TASK_QUEUE_MAX
         self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=self.queue_max)
@@ -109,7 +138,7 @@ class TaskPool:
         while True:
             task_id = await self._queue.get()
             try:
-                await run_task(task_id)
+                await run_task(task_id, self.agent_cfg)
             except Exception as e:  # noqa: BLE001
                 logger.log("error", "worker_error", {"task_id": task_id, "error": repr(e)})
             finally:

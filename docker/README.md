@@ -86,6 +86,39 @@ set_log_sink(MyBusinessSink())   # 应用启动时注册一次
 - **参考实现**：`log_sink_http.py` 用 `httpx` 上抛到业务系统 HTTP 端点（`LOG_SINK_URL`），失败吞掉、不重试（避免阻塞 agent）。业务侧重试/去重。
 - **事件类型**：`agent_run_start` / `agent_run_end` / `span_start` / `span_end` / `agent_run_error` / `task_finished` 等。
 
+## Skill 加载（skill-as-tool）
+
+网关把 hermes 开发的 skill（`SKILL.md` + `scripts/` + `references/`）暴露给 agent 按需调用，而非全量塞进上下文。所有 skill **全局共享**，通过三个 `function_tool` 提供：
+
+| 工具 | 作用 |
+|------|------|
+| `list_skills(tag?)` | 列出可用技能及用途，供模型选型（`tag` 可过滤，如 `devops`）|
+| `load_skill(name)` | 读取某 skill 的完整 SKILL.md 操作指引（已剥离 YAML front-matter）|
+| `run_skill_script(name, script, args?)` | 运行某 skill `scripts/` 下的 Python 脚本并回显输出（超时保护）|
+
+skill 目录通过 **volume 挂载宿主机** `/home/ctyun/.hermes/skills`，改动热生效无需重建镜像。镜像内置 `docker-cli` + `curl`（skill scripts 大多用纯 Python + docker/curl 操作 ACR/API，**不依赖 hermes runtime**）。
+
+配置（环境变量，见 `config.py`）：
+```bash
+SKILLS_DIR=/srv/gateway/skills          # volume 挂载点
+SKILLS_ENABLED=lp-deploy-ops,lp-project-ops   # 白名单，逗号分隔；空=全部启用
+SKILL_SCRIPT_TIMEOUT_S=120              # 脚本超时
+```
+
+## MCP 工具加载（skill 配套的标准 MCP 服务器）
+
+你的 skill 可能配套需要标准 MCP 工具（github/文件/浏览器等，或自建业务 MCP）。这些是**独立的 MCP 服务器**（非 hermes 本体），通过 `MCPServerManager` 统一加载：
+
+- 配置：`mcp_servers.json`（见 `mcp_servers.example.json`），JSON 数组，支持两种 type：
+  ```json
+  { "name": "files", "type": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
+  { "name": "my-business", "type": "streamable_http", "url": "http://mcp:9000/mcp", "headers": {"Authorization": "Bearer X"} }
+  ```
+- 加载方式：每次 agent run 由 `MCPServerManager([...])` 建立连接窗口，**只把连接成功的 server** 通过 `manager.active_servers` 挂给 agent，单个服务器故障不影响整个 run。
+- compose 里把 `mcp_servers.json` 以只读 volume 挂进容器（因可能含 token，已加入 `.gitignore`，不提交）。
+
+> **MCP 与 Skill 的关系**：两者独立加载、全局共享。Skill 是"读取操作指引 + 跑本地脚本"的工具；MCP 是"连接独立标准 MCP 服务器拿外部工具"。agent 组装时先挂 skill 工具列表，再把 active MCP servers 挂到 `mcp_servers`。
+
 ## 构建与运行
 
 方式一：docker compose（推荐）
@@ -113,3 +146,4 @@ docker run -p 8080:8080 \
 - **同步不阻塞**：提交只入队、立即返回，长任务后台执行，不占用请求线程。
 - **日志旁路**：日志推送到业务系统为旁路，任何失败都不影响 agent 主流程与任务状态。
 - **追踪不上报 OpenAI**：本地 tracing 保持开启（供 `BusinessLogProcessor` 取轨迹推你的业务系统），但通过 `set_default_openai_client(..., use_for_tracing=False)` **不把数据上报 OpenAI**。**切勿**设置 `OPENAI_AGENTS_DISABLE_TRACING=1`，那会同时关掉本地 Processor 事件。（注：控制的其实是执行代理的 key，不涉及 `DISABLE_OPENAI_TRACING` 这个变量。）
+- **Skill 不拖入 hermes runtime**：skill-as-tool 直接读 SKILL.md 并跑其纯 Python 脚本，不把整个 hermes 当作 MCP server，轻量且可精细控制白名单。MCP 独立走 `MCPServerManager`，与 skill 分开加载、全局共享。

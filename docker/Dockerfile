@@ -12,6 +12,8 @@ FROM ${PYTHON_BASE_IMAGE}
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ARG PIP_DEFAULT_TIMEOUT=120
 ARG PIP_RETRIES=20
+# apt 源镜像（适配国内构建）；默认空 = 官方源（海外/默认 runner）。用法与 lp 一致。
+ARG APT_MIRROR=""
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -20,6 +22,18 @@ ENV PIP_DEFAULT_TIMEOUT=${PIP_DEFAULT_TIMEOUT}
 ENV PIP_RETRIES=${PIP_RETRIES}
 
 WORKDIR /srv/gateway
+
+# skill scripts 运行时依赖：python3(基础镜像自带) + docker-cli + curl
+# （skill 的 scripts 用纯 Python + docker/curl 操作 ACR/API，不依赖 hermes runtime）
+RUN if [ -n "${APT_MIRROR}" ]; then \
+        sed -i "s/deb.debian.org/${APT_MIRROR}/g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+        sed -i "s/deb.debian.org/${APT_MIRROR}/g" /etc/apt/sources.list 2>/dev/null; \
+    fi; \
+    apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        docker.io \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # 先装依赖（利用缓存层）
 COPY gateway/requirements.txt requirements.txt

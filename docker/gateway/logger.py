@@ -14,10 +14,10 @@ import contextvars
 from typing import Any
 
 # 当前任务上下文贯穿的 trace_id / task_id，由 ASGI 中间件注入（见 middleware.py）。
-_current_task_id: contextvars.ContextVar[str | None] = ContextVar(
+_current_task_id: "contextvars.ContextVar[str | None]" = contextvars.ContextVar(
     "dsh_gateway_current_task_id", default=None
 )
-_current_trace_id: contextvars.ContextVar[str | None] = ContextVar(
+_current_trace_id: "contextvars.ContextVar[str | None]" = contextvars.ContextVar(
     "dsh_gateway_current_trace_id", default=None
 )
 
