@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from . import config, logger, models as m, trace_ui
+from . import config, logger, models as m, task_ui, trace_ui
 from .log_sink_http import default_log_sink
 from .logger import set_log_sink
 from .middleware import TaskContextMiddleware
@@ -120,6 +120,30 @@ async def submit(req: SubmitRequest, request: Request) -> dict:
         raise HTTPException(status_code=429, detail="任务队列已满")
     # 返回回执；业务侧记录 trace_id/request-id 以便后续追踪。
     return {"task_id": task_id, "status": task.status}
+
+
+@app.get("/tasks")
+async def list_tasks(status: str | None = None, limit: int = 50, offset: int = 0) -> dict:
+    """列出最近的任务（默认按提交时间倒序），支持按状态筛选。返回不含 output 明细的概要。"""
+    q = m.TaskModel.all()
+    if status:
+        if status not in (m.TaskStatus.PENDING, m.TaskStatus.RUNNING,
+                          m.TaskStatus.SUCCEEDED, m.TaskStatus.FAILED, m.TaskStatus.CANCELLED):
+            raise HTTPException(status_code=400, detail=f"非法状态: {status}")
+        q = q.filter(status=status)
+    rows = await q.order_by("-created_at").limit(max(1, min(limit, 200))).offset(max(0, offset))
+    items = [
+        {
+            "task_id": t.id,
+            "status": t.status,
+            "agent_name": t.agent_name,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "runs_ms": t.runs_ms,
+            "trace_id": t.trace_id,
+        }
+        for t in rows
+    ]
+    return {"items": items, "count": len(items)}
 
 
 @app.get("/tasks/{task_id}")
@@ -227,6 +251,48 @@ async def trace_ui_list() -> str:
         for r in rows
     ]
     return trace_ui.render_trace_list_html(items)
+
+
+@app.get("/ui/tasks", response_class=HTMLResponse)
+async def tasks_ui_list(status: str | None = None, limit: int = 200) -> str:
+    """任务进度展示页：列表（状态彩色徽章、筛选、自动轮询、行内取消）。"""
+    q = m.TaskModel.all()
+    if status:
+        if status not in (m.TaskStatus.PENDING, m.TaskStatus.RUNNING,
+                          m.TaskStatus.SUCCEEDED, m.TaskStatus.FAILED, m.TaskStatus.CANCELLED):
+            raise HTTPException(status_code=400, detail=f"非法状态: {status}")
+        q = q.filter(status=status)
+    rows = await q.order_by("-created_at").limit(max(1, min(limit, 500)))
+    items = [
+        {
+            "task_id": t.id,
+            "status": t.status,
+            "agent_name": t.agent_name,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "runs_ms": t.runs_ms,
+            "trace_id": t.trace_id,
+        }
+        for t in rows
+    ]
+    return task_ui.render_tasks_html(items, active_status=status, limit=limit)
+
+
+@app.get("/ui/tasks/{task_id}", response_class=HTMLResponse)
+async def task_ui_detail(task_id: str) -> str:
+    """任务详情页：状态、输出/错误、trace 跳转、取消按钮。"""
+    task = await m.TaskModel.get_or_none(id=task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    detail = m.TaskResult(
+        task_id=task.id,
+        status=task.status,
+        output_text=task.output_text,
+        error_detail=task.error_detail,
+        trace_id=task.trace_id,
+        agent_name=task.agent_name,
+        runs_ms=task.runs_ms,
+    ).to_dict()
+    return task_ui.render_task_detail_html(detail)
 
 
 @app.get("/ui/{trace_id}", response_class=HTMLResponse)
