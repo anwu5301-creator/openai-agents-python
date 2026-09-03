@@ -14,12 +14,13 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from . import config, logger, models as m
-from .middleware import TaskContextMiddleware
+from . import config, logger, models as m, trace_ui
 from .log_sink_http import default_log_sink
 from .logger import set_log_sink
+from .middleware import TaskContextMiddleware
 from .runner import AgentConfig, TaskPool
 from .trace_bridge import BusinessLogProcessor
 from .trace_store import TraceStoreProcessor
@@ -181,3 +182,33 @@ async def list_traces(limit: int = 20, offset: int = 0) -> dict:
         for r in rows
     ]
     return {"items": items, "count": len(items)}
+
+
+@app.get("/ui", response_class=HTMLResponse)
+async def trace_ui_list() -> str:
+    """Trace 展示页：最近 trace 列表（浏览器可视化）。"""
+    rows = _trace_store.read_jsonl(limit=50) if _trace_store else []
+    items = [
+        {"trace_id": r["trace_id"], "name": r["name"], "span_count": len(r["spans"])}
+        for r in rows
+    ]
+    return trace_ui.render_trace_list_html(items)
+
+
+@app.get("/ui/{trace_id}", response_class=HTMLResponse)
+async def trace_ui_detail(trace_id: str) -> str:
+    """Trace 展示页：单个 run 的 span 树（可折叠展开）。"""
+    found = None
+    if _trace_store is not None:
+        for r in _trace_store.read_jsonl(limit=500):
+            if r["trace_id"] == trace_id:
+                found = r
+                break
+        if found is None:
+            for r in _trace_store.recent():
+                if r["trace_id"] == trace_id:
+                    found = r
+                    break
+    if found is None:
+        raise HTTPException(status_code=404, detail="trace 不存在")
+    return trace_ui.render_trace_detail_html(found["trace_id"], found["name"], found["spans"])
