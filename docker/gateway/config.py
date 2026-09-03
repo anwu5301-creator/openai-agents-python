@@ -25,6 +25,8 @@ PORT: int = _int("GATEWAY_PORT", 8080)
 # 数据库（任务回执与状态存储）
 # --------------------------------------------------------------------------- #
 DB_URL: str = os.environ.get("GATEWAY_DB_URL", "sqlite://./gateway.db")
+# 工作/数据目录：trace JSONL、sqlite 等都放这里，配合 volume 持久化。
+DATA_DIR: str = os.environ.get("GATEWAY_DATA_DIR", "/srv/gateway/data")
 
 # --------------------------------------------------------------------------- #
 # LLM 端点（OpenAI 兼容网关）
@@ -84,3 +86,9 @@ TASK_POLL_INTERVAL_S: float = float(os.environ.get("TASK_POLL_INTERVAL_S", "0.2"
 TASK_SWEEP_INTERVAL_S: float = float(os.environ.get("TASK_SWEEP_INTERVAL_S", "2"))
 # 兜底：进程崩溃 / 容器重启后，把仍处于 processing 的任务标记为 failed，避免永久悬挂。
 TASK_STALE_TIMEOUT_S: float = float(os.environ.get("TASK_STALE_TIMEOUT_S", "600"))
+
+# --------------------------------------------------------------------------- #
+# 自建 Trace 存储（TraceStoreProcessor → TraceModel → /traces 查询）
+# --------------------------------------------------------------------------- #
+# 开启时每次 run 的完整 span 树落库；关闭时仅保留内存最近若干条（recent）。
+TRACE_STORE_ENABLED: bool = os.environ.get("TRACE_STORE_ENABLED", "1").lower() in ("1", "true", "yes")

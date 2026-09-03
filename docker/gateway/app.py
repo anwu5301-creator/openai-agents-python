@@ -22,6 +22,7 @@ from .log_sink_http import default_log_sink
 from .logger import set_log_sink
 from .runner import AgentConfig, TaskPool
 from .trace_bridge import BusinessLogProcessor
+from .trace_store import TraceStoreProcessor
 
 app = FastAPI(title="openai-agents gateway", version="0.1.0")
 
@@ -30,6 +31,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 app.add_middleware(TaskContextMiddleware)
 
 _pool: TaskPool | None = None
+_trace_store: TraceStoreProcessor | None = None
 
 
 class SubmitRequest(BaseModel):
@@ -41,7 +43,7 @@ class SubmitRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup() -> None:
-    global _pool
+    global _pool, _trace_store
     from tortoise import Tortoise
 
     # Tortoise 1.x 用 contextvar 持有连接上下文；FastAPI 的请求处理在不同 asyncio task 运行，
@@ -66,6 +68,9 @@ async def startup() -> None:
     #      llm_client.configure_default_llm() 里的 use_for_tracing=False 保证。
     from agents.tracing import add_trace_processor
     add_trace_processor(BusinessLogProcessor())
+    # 自建 Trace 存储：收集完整 span 树落库，提供 GET /traces 查询（不依赖 OpenAI Viewer）。
+    _trace_store = TraceStoreProcessor()
+    add_trace_processor(_trace_store)
 
     # Skill 与 MCP 工具的全局组装（全局共享）：
     #  - skills: 扫描 SKILLS_DIR 生成 list/load/run_skill_script 工具。
@@ -136,3 +141,43 @@ async def get_task(task_id: str) -> dict:
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/traces/{trace_id}")
+async def get_trace(trace_id: str) -> dict:
+    """返回一次 agent run 的完整追踪（trace + span 树），来源为 data/traces.jsonl。"""
+    found = None
+    if _trace_store is not None:
+        for r in _trace_store.read_jsonl(limit=200):
+            if r["trace_id"] == trace_id:
+                found = r
+                break
+        # 兜底：内存 recent 里也找
+        if found is None:
+            for r in _trace_store.recent():
+                if r["trace_id"] == trace_id:
+                    found = r
+                    break
+    if found is None:
+        raise HTTPException(status_code=404, detail="trace 不存在")
+    return m.TraceResult(
+        trace_id=found["trace_id"],
+        name=found["name"],
+        created_at=None,
+        spans=found["spans"],
+    ).to_dict()
+
+
+@app.get("/traces")
+async def list_traces(limit: int = 20, offset: int = 0) -> dict:
+    """列出最近的 trace（按完成时间倒序），不含 span 明细，便于总览。"""
+    rows = _trace_store.read_jsonl(limit=max(1, min(limit, 100)), offset=max(0, offset)) if _trace_store else []
+    items = [
+        {
+            "trace_id": r["trace_id"],
+            "name": r["name"],
+            "span_count": len(r["spans"]),
+        }
+        for r in rows
+    ]
+    return {"items": items, "count": len(items)}

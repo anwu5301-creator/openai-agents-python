@@ -67,6 +67,21 @@ class TaskModel(Model):
 
 
 @dataclass
+class TraceResult:
+    trace_id: str
+    name: str | None
+    created_at: str | None
+    spans: list | None
+
+    def to_dict(self) -> dict:
+        return {
+            "trace_id": self.trace_id,
+            "name": self.name,
+            "created_at": self.created_at,
+            "spans": self.spans,
+        }
+
+
 class TaskResult:
     """异步回执的最终载荷（供 /tasks/{id} 与日志 push 复用）。"""
 
