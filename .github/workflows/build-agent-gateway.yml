@@ -59,6 +59,8 @@ jobs:
             PIP_INDEX_URL=${{ secrets.PIP_INDEX_URL || vars.PIP_INDEX_URL || 'https://pypi.org/simple' }}
             PIP_DEFAULT_TIMEOUT=${{ vars.PIP_DEFAULT_TIMEOUT || '120' }}
             PIP_RETRIES=${{ vars.PIP_RETRIES || '20' }}
+            APT_MIRROR=${{ vars.APT_MIRROR || '' }}
+            DOCKER_CLI_VERSION=${{ vars.DOCKER_CLI_VERSION || '27.5.1' }}
           tags: |
             ${{ steps.vars.outputs.image }}:latest
           cache-from: type=gha,scope=agent-gateway

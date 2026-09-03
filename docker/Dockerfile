@@ -23,17 +23,24 @@ ENV PIP_RETRIES=${PIP_RETRIES}
 
 WORKDIR /srv/gateway
 
-# skill scripts 运行时依赖：python3(基础镜像自带) + docker-cli + curl
+# skill scripts 运行时依赖：python3(基础镜像自带) + docker CLI + curl
 # （skill 的 scripts 用纯 Python + docker/curl 操作 ACR/API，不依赖 hermes runtime）
+# 注意：Debian trixie 的 docker.io 包只装 dockerd/docker-init/docker-proxy，不含 docker 客户端，
+#       故直接拉取 Docker 官方静态 CLI 二进制（仅客户端，无需 daemon）。
+ARG DOCKER_CLI_VERSION=27.5.1
 RUN if [ -n "${APT_MIRROR}" ]; then \
         sed -i "s/deb.debian.org/${APT_MIRROR}/g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
         sed -i "s/deb.debian.org/${APT_MIRROR}/g" /etc/apt/sources.list 2>/dev/null; \
     fi; \
     apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        docker.io \
         curl \
-    && rm -rf /var/lib/apt/lists/*
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_CLI_VERSION}.tgz" -o /tmp/docker.tgz \
+    && tar -xzf /tmp/docker.tgz -C /tmp \
+    && mv /tmp/docker/docker /usr/local/bin/docker \
+    && rm -rf /tmp/docker /tmp/docker.tgz
 
 # 先装依赖（利用缓存层）
 COPY gateway/requirements.txt requirements.txt
