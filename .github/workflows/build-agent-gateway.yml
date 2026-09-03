@@ -1,0 +1,65 @@
+name: agent-gateway 镜像构建
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: agent-gateway-build
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: agent-gateway
+  REGISTRY: ${{ vars.REGISTRY || 'crpi-u265r07n4blchcqo.cn-shanghai.personal.cr.aliyuncs.com' }}
+  REGISTRY_NAMESPACE: ${{ vars.REGISTRY_NAMESPACE || 'ck-registry' }}
+  # 网关镜像构建上下文：仓库根（需读取 docker/Dockerfile 与 docker/gateway/）
+  CONTEXT: .
+  DOCKERFILE: docker/Dockerfile
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: 生成镜像变量
+        id: vars
+        shell: bash
+        run: |
+          NS="${{ env.REGISTRY_NAMESPACE }}"
+          echo "image=${{ env.REGISTRY }}/${NS}/${{ env.IMAGE_NAME }}" >> "$GITHUB_OUTPUT"
+
+      - name: 安装 Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: 登录镜像仓库
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: 构建并推送 agent-gateway 镜像
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ env.CONTEXT }}
+          file: ${{ env.DOCKERFILE }}
+          platforms: linux/amd64
+          pull: true
+          push: true
+          provenance: false
+          sbom: false
+          build-args: |
+            PIP_INDEX_URL=${{ secrets.PIP_INDEX_URL || vars.PIP_INDEX_URL || 'https://pypi.org/simple' }}
+            PIP_DEFAULT_TIMEOUT=${{ vars.PIP_DEFAULT_TIMEOUT || '120' }}
+            PIP_RETRIES=${{ vars.PIP_RETRIES || '20' }}
+          tags: |
+            ${{ steps.vars.outputs.image }}:latest
+          cache-from: type=gha,scope=agent-gateway
+          cache-to: type=gha,mode=max,scope=agent-gateway

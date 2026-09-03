@@ -1,0 +1,22 @@
+# 构建上下文忽略项（镜像构建时不用带入仓库无关内容）
+.git/
+.github/
+.agents/
+.uv*/.venv*/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.log
+.DS_Store
+Thumbs.db
+
+# 文档/测试/示例等：gateway 镜像只依赖 docker/gateway + docker/Dockerfile
+docs/
+tests/
+integration_tests/
+examples/
+site/

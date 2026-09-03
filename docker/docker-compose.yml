@@ -1,0 +1,26 @@
+services:
+  llm-gateway:
+    # 自建/第三方 OpenAI 兼容网关（占位示例，请替换为你实际的服务）
+    image: your-llm-gateway:latest
+    ports:
+      - "18000:8000"
+
+  agent-gateway:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # 模型网关连接（改 base_url 场景）
+      LLM_BASE_URL: http://llm-gateway:8000/v1
+      LLM_API_KEY: ${LLM_API_KEY:-unknown}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      LLM_API: chat
+      # 业务系统日志接收端点（业务侧自己对接；不配置则丢弃日志）
+      LOG_SINK_URL: ${LOG_SINK_URL:-}
+      # 存储
+      DB_URL: sqlite:///./gateway.db
+    volumes:
+      - ./data:/srv/gateway
