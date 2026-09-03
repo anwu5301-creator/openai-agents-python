@@ -68,7 +68,8 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
                 tools=tools if tools else None,
                 mcp_servers=list(manager.active_servers),
             )
-            return await Runner.run_async(agent, input=task.input_text or "")
+            # 用 Runner.run()（异步）；注意 0.22.0 没有 run_async，异步入口是 run()
+            return await Runner.run(agent, input=task.input_text or "")
 
     t0 = time.monotonic()
     error_detail: str | None = None
