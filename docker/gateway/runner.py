@@ -60,12 +60,13 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
 
         server_list = agent_cfg.mcp_server_list if agent_cfg else []
         async with MCPServerManager(server_list) as manager:
+            # mcp_servers 必须为 list（空列表也合法），不能传 None
             agent = Agent(
                 name=task.agent_name or cfg.get("agent_name") or "gateway-agent",
                 instructions=instructions,
                 model=config.LLM_MODEL,
                 tools=tools if tools else None,
-                mcp_servers=manager.active_servers if manager.active_servers else None,
+                mcp_servers=list(manager.active_servers),
             )
             return await Runner.run_async(agent, input=task.input_text or "")
 
