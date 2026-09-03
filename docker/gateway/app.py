@@ -44,7 +44,13 @@ async def startup() -> None:
     global _pool
     from tortoise import Tortoise
 
-    await Tortoise.init(db_url=config.DB_URL, modules={"models": ["gateway.models"]})
+    # Tortoise 1.x 用 contextvar 持有连接上下文；FastAPI 的请求处理在不同 asyncio task 运行，
+    # 需 _enable_global_fallback=True 让连接可跨 task 访问（否则报 "No TortoiseContext is active"）。
+    await Tortoise.init(
+        db_url=config.DB_URL,
+        modules={"models": ["gateway.models"]},
+        _enable_global_fallback=True,
+    )
     await Tortoise.generate_schemas()
 
     # 接入自建/第三方 OpenAI 兼容网关（base_url / api_key / api）。
