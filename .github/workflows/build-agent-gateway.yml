@@ -17,8 +17,8 @@ env:
   IMAGE_NAME: agent-gateway
   REGISTRY: ${{ vars.REGISTRY || 'crpi-u265r07n4blchcqo.cn-shanghai.personal.cr.aliyuncs.com' }}
   REGISTRY_NAMESPACE: ${{ vars.REGISTRY_NAMESPACE || 'ck-registry' }}
-  # 网关镜像构建上下文：仓库根（需读取 docker/Dockerfile 与 docker/gateway/）
-  CONTEXT: .
+  # 网关镜像构建上下文：docker/（Dockerfile 内的 COPY gateway/... 均相对该目录）
+  CONTEXT: ./docker
   DOCKERFILE: docker/Dockerfile
 
 jobs:
