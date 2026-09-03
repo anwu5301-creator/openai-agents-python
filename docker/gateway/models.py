@@ -23,7 +23,8 @@ class TaskStatus(str):
 
 
 VALID_TRANSITIONS: dict[str, set[str]] = {
-    TaskStatus.PENDING: {TaskStatus.RUNNING},
+    # PENDING -> RUNNING：被 worker 拾取执行；PENDING -> CANCELLED：排队中被取消（不执行）。
+    TaskStatus.PENDING: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
     TaskStatus.RUNNING: {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED},
     TaskStatus.SUCCEEDED: set(),
     TaskStatus.FAILED: set(),

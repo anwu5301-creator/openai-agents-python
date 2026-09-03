@@ -139,6 +139,40 @@ async def get_task(task_id: str) -> dict:
     return result.to_dict()
 
 
+@app.post("/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str) -> dict:
+    """取消任务：排队中直接摘除，执行中尽力中断（asyncio cancel）。
+
+    返回 {task_id, cancelled: bool, detail: "queued"|"running"|"already_done"|"not_found"}。
+    幂等：对已结束/已取消任务返回 cancelled=False + detail。
+    """
+    task = await m.TaskModel.get_or_none(id=task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    # 队列中/执行中 → 交由 TaskPool 处理；已完成的任务无需取消
+    if task.status not in (m.TaskStatus.PENDING, m.TaskStatus.RUNNING):
+        return {"task_id": task_id, "cancelled": False, "detail": "already_done", "status": task.status}
+
+    source = await _pool.cancel(task_id) if _pool is not None else None
+    if source is None:
+        # 不在队列也不在执行（可能刚被 worker 抢走但状态未落库）：按已结束处理
+        fresh = await m.TaskModel.get_or_none(id=task_id)
+        st = fresh.status if fresh else task.status
+        if st in (m.TaskStatus.SUCCEEDED, m.TaskStatus.FAILED, m.TaskStatus.CANCELLED):
+            return {"task_id": task_id, "cancelled": False, "detail": "already_done", "status": st}
+        # 兜底：尽力直接标记取消
+        try:
+            task.validate_transition(m.TaskStatus.CANCELLED)
+            task.status = m.TaskStatus.CANCELLED
+            await task.save()
+            return {"task_id": task_id, "cancelled": True, "detail": "forced", "status": task.status}
+        except m.IllegalStatusTransition:
+            return {"task_id": task_id, "cancelled": False, "detail": "already_done", "status": task.status}
+
+    return {"task_id": task_id, "cancelled": True, "detail": source, "status": m.TaskStatus.CANCELLED}
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
