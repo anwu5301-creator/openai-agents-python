@@ -24,8 +24,8 @@ services:
       LLM_API: chat
       # 业务系统日志接收端点（业务侧自己对接；不配置则丢弃日志）
       LOG_SINK_URL: ${LOG_SINK_URL:-}
-      # 存储
-      DB_URL: sqlite:///./gateway.db
+      # 存储（DB 文件挂载到 data 子目录，避免整目录覆盖容器内 gateway 代码）
+      DB_URL: sqlite:///./data/gateway.db
       # Skill：volume 挂载宿主机 hermes skills 目录，改动热生效无需重建镜像
       SKILLS_DIR: /srv/gateway/skills
       # 启用的 skill 白名单（逗号分隔；空=全部）。如: SKILLS_ENABLED: lp-deploy-ops,lp-project-ops
@@ -33,7 +33,8 @@ services:
       # MCP 工具配置（skill 配套的标准 MCP 服务器）
       MCP_CONFIG_PATH: /srv/gateway/mcp_servers.json
     volumes:
-      - ./data:/srv/gateway
+      # 只挂载 data 子目录（DB 文件持久化）；挂 /srv/gateway 整目录会覆盖镜像内 gateway/ 代码
+      - ./data:/srv/gateway/data
       # skill 目录：宿主机 hermes 的 skills 目录（按需改路径）
       - ${HERMES_SKILLS_DIR:-/home/ctyun/.hermes/skills}:/srv/gateway/skills:ro
       # MCP 服务器配置（见 ./mcp_servers.example.json）
