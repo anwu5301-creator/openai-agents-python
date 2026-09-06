@@ -28,6 +28,8 @@ WORKDIR /srv/gateway
 # 注意：Debian trixie 的 docker.io 包只装 dockerd/docker-init/docker-proxy，不含 docker 客户端，
 #       故直接拉取 Docker 官方静态 CLI 二进制（仅客户端，无需 daemon）。
 ARG DOCKER_CLI_VERSION=27.5.1
+# BuildKit 平台变量（amd64/arm64），用于下载对应架构的 docker CLI 静态包
+ARG TARGETARCH
 RUN if [ -n "${APT_MIRROR}" ]; then \
         sed -i "s/deb.debian.org/${APT_MIRROR}/g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
         sed -i "s/deb.debian.org/${APT_MIRROR}/g" /etc/apt/sources.list 2>/dev/null; \
@@ -37,7 +39,12 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
         curl \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_CLI_VERSION}.tgz" -o /tmp/docker.tgz \
+    && case "${TARGETARCH:-amd64}" in \
+         arm64) DOCKER_STATIC_ARCH="aarch64" ;; \
+         amd64) DOCKER_STATIC_ARCH="x86_64" ;; \
+         *) DOCKER_STATIC_ARCH="${TARGETARCH}" ;; \
+       esac \
+    && curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_STATIC_ARCH}/docker-${DOCKER_CLI_VERSION}.tgz" -o /tmp/docker.tgz \
     && tar -xzf /tmp/docker.tgz -C /tmp \
     && mv /tmp/docker/docker /usr/local/bin/docker \
     && rm -rf /tmp/docker /tmp/docker.tgz
