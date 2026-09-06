@@ -25,7 +25,7 @@ services:
       # 业务系统日志接收端点（业务侧自己对接；不配置则丢弃日志）
       LOG_SINK_URL: ${LOG_SINK_URL:-}
       # 存储（DB 文件挂载到 data 子目录，避免整目录覆盖容器内 gateway 代码）
-      GATEWAY_DB_URL: sqlite:///./data/gateway.db
+      GATEWAY_DB_URL: sqlite:////srv/gateway/data/gateway.db
       # 数据/工作目录：trace JSONL、sqlite 等（默认 /srv/gateway/data，与下方 volume 对应）
       GATEWAY_DATA_DIR: /srv/gateway/data
       # Skill：volume 挂载宿主机 hermes skills 目录，改动热生效无需重建镜像
