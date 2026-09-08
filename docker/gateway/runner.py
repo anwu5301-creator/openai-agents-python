@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -58,6 +59,13 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
 
     # 构造 agent（业务侧在 config_json 里自定义 instructions/agent_name）
     cfg = task.config_json or {}
+    # 任务级上下文注入进程环境变量：技能脚本(run_skill_script 子进程)通过
+    # WEKNORA_KB_ID / WEKNORA_KNOWLEDGE_ID 读取本次任务的目标知识库与文档，
+    # 覆盖技能 config.yaml 的固定 kb_id（多知识库动态触发场景）。
+    _ctx_keys = ("kb_id", "knowledge_id", "doc_name")
+    for k in _ctx_keys:
+        if cfg.get(k):
+            os.environ[f"WEKNORA_{k.upper()}"] = str(cfg[k])
     tools = list((agent_cfg.skill_tools if agent_cfg else []))
     instructions = task.instructions or cfg.get("instructions") or "你是一个通用助手。"
     if tools:
