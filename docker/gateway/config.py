@@ -64,7 +64,6 @@ SKILL_SCRIPT_TIMEOUT_S: float = float(os.environ.get("SKILL_SCRIPT_TIMEOUT_S", "
 # 例见 docker/mcp_servers.example.json 与 docker/docker-compose.yml 挂载。
 # --------------------------------------------------------------------------- #
 MCP_CONFIG_PATH: str = os.environ.get("MCP_CONFIG_PATH", "/srv/gateway/mcp_servers.json")
-
 # --------------------------------------------------------------------------- #
 # 日志输出层（通用推送接口）
 #  - 全部落到业务系统。base_url 由代理层 ASGI 中间件在每次请求注入（见 middleware.py），
@@ -86,6 +85,13 @@ TASK_POLL_INTERVAL_S: float = float(os.environ.get("TASK_POLL_INTERVAL_S", "0.2"
 TASK_SWEEP_INTERVAL_S: float = float(os.environ.get("TASK_SWEEP_INTERVAL_S", "2"))
 # 兜底：进程崩溃 / 容器重启后，把仍处于 processing 的任务标记为 failed，避免永久悬挂。
 TASK_STALE_TIMEOUT_S: float = float(os.environ.get("TASK_STALE_TIMEOUT_S", "600"))
+
+# --------------------------------------------------------------------------- #
+# Agent 运行
+# --------------------------------------------------------------------------- #
+# 单任务最大 agent 回合数（openai-agents Runner max_turns）。技能类任务
+# （读取操作指引 + 连续跑多个脚本）远超 SDK 默认 10 回合，需调大。
+AGENT_MAX_TURNS: int = _int("AGENT_MAX_TURNS", 60)
 
 # --------------------------------------------------------------------------- #
 # 自建 Trace 存储（TraceStoreProcessor → TraceModel → /traces 查询）
