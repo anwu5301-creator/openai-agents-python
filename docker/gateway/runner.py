@@ -66,6 +66,13 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
     for k in _ctx_keys:
         if cfg.get(k):
             os.environ[f"WEKNORA_{k.upper()}"] = str(cfg[k])
+    # 任务级 LLM 配置（2026-09-10 WEK-46）：WeKnora 按知识库绑定模型传入
+    # model/base_url/api_key → 注入 WEKNORA_LLM_* 环境变量，技能脚本 llm_config()
+    # 优先读任务级配置（> LLM_* Agent 主进程 > 技能 config.yaml）。
+    _llm_keys = ("model", "base_url", "api_key")
+    for k in _llm_keys:
+        if cfg.get(k):
+            os.environ[f"WEKNORA_LLM_{k.upper()}"] = str(cfg[k])
     tools = list((agent_cfg.skill_tools if agent_cfg else []))
     instructions = task.instructions or cfg.get("instructions") or "你是一个通用助手。"
     if tools:
