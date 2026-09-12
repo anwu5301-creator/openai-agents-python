@@ -49,6 +49,8 @@ LLM_API: str = os.environ.get("LLM_API", "chat")
 # --------------------------------------------------------------------------- #
 # skill 目录：运行时 volume 挂载宿主机 /home/ctyun/.hermes/skills/，改动热生效无需重建镜像。
 SKILLS_DIR: str = os.environ.get("SKILLS_DIR", "/srv/gateway/skills")
+# 技能安装目录（可写）：/skills/install 上传的技能落这里，与只读预装目录共同构成扫描源。
+SKILLS_INSTALL_DIR: str = os.environ.get("SKILLS_INSTALL_DIR", "/srv/gateway/data/skills")
 # 启用的 skill 白名单；空列表 = 全部启用。
 SKILLS_ENABLED: list[str] = [
     s.strip()

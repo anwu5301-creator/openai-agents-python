@@ -29,10 +29,26 @@ _registry: dict[str, SkillSpec] = {}
 
 
 def refresh_skill_registry() -> None:
-    """重新扫描 skill 目录并更新注册表（启动时调用；volume 改动可加定时/手动刷新）。"""
+    """重新扫描 skill 目录并更新注册表（启动时调用；volume 改动可加定时/手动刷新）。
+
+    扫描源 = 只读预装目录(config.SKILLS_DIR) + 可写安装目录(config.SKILLS_INSTALL_DIR)，
+    后装技能（/skills/install 落 install_dir）也可见。
+    """
     global _registry
-    _registry = scan_skills(config.SKILLS_DIR, config.SKILLS_ENABLED)
+    dirs = [config.SKILLS_DIR]
+    install_dir = getattr(config, "SKILLS_INSTALL_DIR", None)
+    if install_dir:
+        dirs.append(install_dir)
+    merged: dict[str, SkillSpec] = {}
+    for d in dirs:
+        merged.update(scan_skills(d, config.SKILLS_ENABLED))
+    _registry = merged
     logger.log("info", "skills_refreshed", {"count": len(_registry), "names": list(_registry)})
+
+
+def get_install_dir() -> str:
+    """返回可写技能安装目录（不存在则创建）。"""
+    return getattr(config, "SKILLS_INSTALL_DIR", None) or config.SKILLS_DIR
 
 
 def list_skill_specs() -> list[dict]:
@@ -61,7 +77,7 @@ def install_skill_zip(data: bytes, force_name: str | None = None) -> dict:
     高危：路径穿越防护 —— 解压时把每个成员路径 clean 后必须仍落在目标目录内。
     返回 {name, path, scripts...}。
     """
-    root = Path(config.SKILLS_DIR)
+    root = Path(get_install_dir())
     root.mkdir(parents=True, exist_ok=True)
 
     # 1. 预扫描 zip 顶层，判断是否带技能名目录
