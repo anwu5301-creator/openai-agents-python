@@ -73,6 +73,10 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
     for k in _llm_keys:
         if cfg.get(k):
             os.environ[f"WEKNORA_LLM_{k.upper()}"] = str(cfg[k])
+    # 任务级技能（2026-09-12）：WeKnora 按知识库绑定技能传入 skill
+    # → 注入 WEKNORA_SKILL，技能脚本/agent 用指定技能（默认 supply-management-policy-compiler）
+    if cfg.get("skill"):
+        os.environ["WEKNORA_SKILL"] = str(cfg["skill"])
     tools = list((agent_cfg.skill_tools if agent_cfg else []))
     instructions = task.instructions or cfg.get("instructions") or "你是一个通用助手。"
     if tools:

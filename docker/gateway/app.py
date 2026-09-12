@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -200,6 +200,31 @@ async def cancel_task(task_id: str) -> dict:
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/skills")
+async def list_skills_http() -> dict:
+    """列出当前可用技能（name/description/scripts），供外部平台（WeKnora/data_supply）选型。"""
+    from .skill_tool import list_skill_specs
+    return {"data": list_skill_specs()}
+
+
+@app.post("/skills/install")
+async def install_skill_http(file: UploadFile = File(...), name: str | None = Form(None)) -> dict:
+    """安装技能 ZIP：解压到 SKILLS_DIR 并热刷新注册表（供 WeKnora 技能管理调用）。
+
+    请求：multipart/form-data，字段 file=<skill.zip>，可选 name=<覆盖技能名>。
+    返回 {name, installed, skill_count_after, scripts}。
+    """
+    from .skill_tool import install_skill_zip
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    try:
+        result = install_skill_zip(data, force_name=name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return result
 
 
 @app.get("/traces/{trace_id}")

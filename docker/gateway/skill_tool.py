@@ -11,8 +11,12 @@ tools 通过全局注册表取得扫描结果，每次 agent 构造时传入。
 
 from __future__ import annotations
 
+import io
 import os
+import re
 import subprocess
+import zipfile
+from pathlib import Path
 from typing import Any
 
 from agents import function_tool
@@ -29,6 +33,135 @@ def refresh_skill_registry() -> None:
     global _registry
     _registry = scan_skills(config.SKILLS_DIR, config.SKILLS_ENABLED)
     logger.log("info", "skills_refreshed", {"count": len(_registry), "names": list(_registry)})
+
+
+def list_skill_specs() -> list[dict]:
+    """返回所有可用技能的简化 dict（name/description/scripts），供 HTTP API 使用。"""
+    return [
+        {
+            "name": s.name,
+            "description": s.description,
+            "scripts": s.scripts,
+        }
+        for s in sorted(_registry.values(), key=lambda x: x.name)
+    ]
+
+
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-_]*$")
+
+
+def install_skill_zip(data: bytes, force_name: str | None = None) -> dict:
+    """把技能 ZIP 安装到 SKILLS_DIR 并热刷新注册表。
+
+    结构约定（与预装技能一致）：
+      <name>/SKILL.md                     —— 必需
+      <name>/scripts/*.py                 —— 可选
+      <name>/references/*  <name>/templates/*   —— 可选
+    ZIP 根可以是技能名目录，也可以不带顶层目录（自动以 SKILL.md 的父目录为技能根）。
+    高危：路径穿越防护 —— 解压时把每个成员路径 clean 后必须仍落在目标目录内。
+    返回 {name, path, scripts...}。
+    """
+    root = Path(config.SKILLS_DIR)
+    root.mkdir(parents=True, exist_ok=True)
+
+    # 1. 预扫描 zip 顶层，判断是否带技能名目录
+    skill_name: str | None = None
+    members = []
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+        members = [n for n in z.namelist() if not n.endswith("/")]
+    except zipfile.BadZipFile as e:
+        raise ValueError(f"不是有效的 ZIP: {e}") from e
+
+    if not members:
+        raise ValueError("ZIP 为空")
+
+    # 找 SKILL.md 所在顶层目录（技能名）
+    for m in members:
+        if m.endswith("/SKILL.md") or m == "SKILL.md":
+            parts = m.split("/")
+            if len(parts) == 1:
+                # SKILL.md 在 zip 根：技能名取显式 name，或另一个成员/其他目录的顶层名
+                skill_name = force_name
+                break
+            if len(parts) >= 2:
+                skill_name = parts[-2]
+                break
+    if not skill_name:
+        # 无 SKILL.md 顶层目录信息 → 取第一个非 SKILL.md 成员的最高层目录
+        for m in members:
+            if m == "SKILL.md":
+                continue
+            parts = m.split("/")
+            if len(parts) >= 1 and parts[0] not in ("SKILL.md",):
+                skill_name = parts[0]
+                break
+    if not skill_name:
+        raise ValueError("无法确定技能名（请用 <skillname>/SKILL.md 结构或指定 name）")
+
+    # 显式 name 覆盖（去扩展名）
+    final_name = force_name or skill_name or members[0].split("/")[0]
+    final_name = final_name.rstrip("/")
+    if final_name.endswith(".zip"):
+        final_name = final_name[:-4]
+    if not _SKILL_NAME_RE.match(final_name):
+        raise ValueError(f"非法技能名: {final_name!r}（只能含小写字母/数字/-/_）")
+
+    dest_dir = root / final_name
+    # 覆盖式安装：先清旧目录（安全：只清目标技能目录）
+    import shutil
+    if dest_dir.exists():
+        shutil.rmtree(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+        for n in z.namelist():
+            if n.endswith("/"):
+                continue
+            # 归一化：去掉可能的顶层技能目录前缀（如果 zip 根是 <name>/）
+            rel = n
+            parts = n.split("/")
+            if len(parts) >= 2 and parts[0] == skill_name:
+                rel = "/".join(parts[1:])
+            if not rel:
+                continue
+            # 路径穿越防护
+            target = (dest_dir / rel).resolve()
+            if not str(target).startswith(str(dest_dir.resolve()) + os.sep) and target != dest_dir.resolve():
+                raise ValueError(f"非法的 zip 路径: {n}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with z.open(n) as src, open(target, "wb") as dst:
+                dst.write(src.read())
+        # 清理可能的 __MACOSX 等
+        for extra in ["__MACOSX"]:
+            ep = dest_dir / extra
+            if ep.exists():
+                shutil.rmtree(ep)
+    except Exception as e:
+        raise ValueError(f"解压失败: {e}") from e
+
+    # 校验 SKILL.md 存在
+    if not (dest_dir / "SKILL.md").is_file():
+        # 如果解压后 SKILL.md 不在技能根（可能在子目录），扫描查找
+        found = list(dest_dir.rglob("SKILL.md"))
+        if not found:
+            raise ValueError("ZIP 内缺少 SKILL.md")
+        # 把 SKILL.md 所在子目录视为技能根 → 若结构是 <name>/xxx/SKILL.md，重建
+        raise ValueError("ZIP 结构应为 <skillname>/SKILL.md 或根目录 SKILL.md")
+
+    # 热刷新注册表
+    refresh_skill_registry()
+    logger.log("info", "skill_installed", {"name": final_name, "path": str(dest_dir)})
+
+    new_spec = _registry.get(final_name)
+    return {
+        "name": final_name,
+        "path": str(dest_dir),
+        "installed": True,
+        "skill_count_after": len(_registry),
+        "scripts": list(new_spec.scripts) if new_spec else [],
+    }
 
 
 def build_skill_tools() -> list[Any]:
