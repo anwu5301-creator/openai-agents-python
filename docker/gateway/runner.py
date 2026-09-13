@@ -90,10 +90,18 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
 
         用 MCPServerManager 管理连接生命周期：只把连接成功的 server 挂给 agent，
         并在本次 run 结束后清理连接，避免跨 run 泄漏。
+
+        注意：每个任务必须独立重建 MCP server 实例（不共享 app lifespan 构建的
+        mcp_server_list）。MCPServerStreamableHttp 的 session 是实例级状态，多任务
+        并发共享同一实例时，一个任务 cleanup 会关闭其他任务正在使用的 session，
+        导致工具调用抛 "Server not initialized"。独立实例后各任务互不干扰。
         """
         from agents.mcp import MCPServerManager
 
-        server_list = agent_cfg.mcp_server_list if agent_cfg else []
+        from .mcp_config import build_servers, load_mcp_config
+
+        # 每个任务从配置重建 server 对象（保证 session 隔离）
+        server_list = build_servers(load_mcp_config(config.MCP_CONFIG_PATH))
         async with MCPServerManager(server_list) as manager:
             # mcp_servers 必须为 list（空列表也合法），不能传 None
             agent = Agent(
