@@ -28,7 +28,7 @@ services:
       GATEWAY_DB_URL: sqlite:////srv/gateway/data/gateway.db
       # 数据/工作目录：trace JSONL、sqlite 等（默认 /srv/gateway/data，与下方 volume 对应）
       GATEWAY_DATA_DIR: /srv/gateway/data
-      # Skill：volume 挂载宿主机 hermes skills 目录，改动热生效无需重建镜像
+      # Skill：只读预装技能目录（相对本 compose 文件；技能包放 ./skills 下，改动热生效无需重建镜像）
       SKILLS_DIR: /srv/gateway/skills
       # 启用的 skill 白名单（逗号分隔；空=全部）。如: SKILLS_ENABLED: lp-deploy-ops,lp-project-ops
       SKILLS_ENABLED: ${SKILLS_ENABLED:-}
@@ -37,7 +37,8 @@ services:
     volumes:
       # 只挂载 data 子目录（DB 文件持久化）；挂 /srv/gateway 整目录会覆盖镜像内 gateway/ 代码
       - ./data:/srv/gateway/data
-      # skill 目录：宿主机 hermes 的 skills 目录（按需改路径）
-      - ${HERMES_SKILLS_DIR:-/home/ctyun/.hermes/skills}:/srv/gateway/skills:ro
+      # skill 目录：随部署目录自带的 ./skills（勿指向宿主机 ~/.hermes/skills，
+      # 那会把无关的助手技能暴露成业务技能，且换机部署时技能全部丢失）
+      - ./skills:/srv/gateway/skills:ro
       # MCP 服务器配置（见 ./mcp_servers.example.json）
       - ./mcp_servers.json:/srv/gateway/mcp_servers.json:ro
