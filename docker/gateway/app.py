@@ -227,6 +227,28 @@ async def install_skill_http(file: UploadFile = File(...), name: str | None = Fo
     return result
 
 
+@app.get("/skills/{skill_name}")
+async def get_skill_detail_http(skill_name: str) -> dict:
+    """查看技能详情：SKILL.md 全文 + 文件清单（供 WeKnora 技能管理查看）。"""
+    from .skill_tool import get_skill_detail
+    try:
+        result = get_skill_detail(skill_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return result
+
+
+@app.delete("/skills/{skill_name}")
+async def delete_skill_http(skill_name: str) -> dict:
+    """删除已安装技能（从可写安装目录移除并热刷新注册表；只读预装目录内的技能不可删）。"""
+    from .skill_tool import delete_skill
+    try:
+        result = delete_skill(skill_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return result
+
+
 @app.get("/traces/{trace_id}")
 async def get_trace(trace_id: str) -> dict:
     """返回一次 agent run 的完整追踪（trace + span 树），来源为 data/traces.jsonl。"""

@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import shutil
 import subprocess
 import zipfile
 from pathlib import Path
@@ -178,6 +179,58 @@ def install_skill_zip(data: bytes, force_name: str | None = None) -> dict:
         "skill_count_after": len(_registry),
         "scripts": list(new_spec.scripts) if new_spec else [],
     }
+
+
+def get_skill_detail(skill_name: str) -> dict:
+    """返回技能详情：SKILL.md 全文 + 文件清单。不存在则抛 ValueError。"""
+    if not _registry:
+        refresh_skill_registry()
+    spec = _registry.get(skill_name)
+    if spec is None:
+        raise ValueError(f"技能不存在: {skill_name}")
+    base = Path(spec.path)
+    files = []
+    if base.exists():
+        for p in sorted(base.rglob("*")):
+            if p.is_file():
+                rel = p.relative_to(base).as_posix()
+                if "__pycache__" in rel:
+                    continue
+                try:
+                    files.append({"path": rel, "size": p.stat().st_size})
+                except OSError:
+                    pass
+    return {
+        "name": spec.name,
+        "description": spec.description,
+        "path": str(spec.path),
+        "scripts": list(spec.scripts),
+        "file_count": len(files),
+        "files": files[:500],  # 文件清单上限，避免超大技能撑爆响应
+        "total_files": len(files),
+    }
+
+
+def delete_skill(skill_name: str) -> dict:
+    """从可写安装目录删除技能并热刷新注册表。
+
+    - 只删除 config.SKILLS_INSTALL_DIR 下的技能（上传安装的）。
+    - 只读预装目录(SKILLS_DIR)内的内置技能不可删，抛 ValueError。
+    """
+    if not _registry:
+        refresh_skill_registry()
+    spec = _registry.get(skill_name)
+    if spec is None:
+        raise ValueError(f"技能不存在: {skill_name}")
+    install_dir = Path(get_install_dir()).resolve()
+    spec_path = Path(spec.path).resolve()
+    if not str(spec_path).startswith(str(install_dir) + os.sep):
+        raise ValueError(f"技能 {skill_name} 位于只读预装目录，不可删除（路径: {spec.path}）")
+    # 从可写安装目录物理删除并热刷新注册表
+    shutil.rmtree(spec_path, ignore_errors=True)
+    refresh_skill_registry()  # 从注册表移除
+    logger.log("info", "skill_deleted", {"name": skill_name, "path": str(spec_path)})
+    return {"name": skill_name, "deleted": True, "path": str(spec_path), "skill_count_after": len(_registry)}
 
 
 def build_skill_tools() -> list[Any]:
