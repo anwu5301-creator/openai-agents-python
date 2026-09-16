@@ -66,6 +66,13 @@ SKILL_SCRIPT_TIMEOUT_S: float = float(os.environ.get("SKILL_SCRIPT_TIMEOUT_S", "
 # 例见 docker/mcp_servers.example.json 与 docker/docker-compose.yml 挂载。
 # --------------------------------------------------------------------------- #
 MCP_CONFIG_PATH: str = os.environ.get("MCP_CONFIG_PATH", "/srv/gateway/mcp_servers.json")
+# 托管配置（可写）：由 /mcp/* 接口维护的运行时配置，存在时优先于上面的种子文件。
+# 默认放数据目录（已是 volume 挂载点），可用 MCP_MANAGED_PATH 覆盖。
+MCP_MANAGED_PATH: str = os.environ.get("MCP_MANAGED_PATH", os.path.join(DATA_DIR, "mcp_servers.json"))
+# /mcp/* 写接口的内部令牌（请求头 X-Internal-Token）；为空则不校验（仅限内网部署时使用）。
+MCP_ADMIN_TOKEN: str = os.environ.get("MCP_ADMIN_TOKEN", "")
+# 单个 MCP server 连通性测试超时（秒）
+MCP_TEST_TIMEOUT_S: float = float(os.environ.get("MCP_TEST_TIMEOUT_S", "20"))
 # --------------------------------------------------------------------------- #
 # 日志输出层（通用推送接口）
 #  - 全部落到业务系统。base_url 由代理层 ASGI 中间件在每次请求注入（见 middleware.py），

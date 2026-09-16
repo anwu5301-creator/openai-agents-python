@@ -119,6 +119,31 @@ SKILL_SCRIPT_TIMEOUT_S=120              # 脚本超时
 
 > **MCP 与 Skill 的关系**：两者独立加载、全局共享。Skill 是"读取操作指引 + 跑本地脚本"的工具；MCP 是"连接独立标准 MCP 服务器拿外部工具"。agent 组装时先挂 skill 工具列表，再把 active MCP servers 挂到 `mcp_servers`。
 
+### MCP 配置在线管理（供 WeKnora「MCP 管理」页调用）
+
+配置采用「种子 + 托管」两段式，**无需重启容器**即可生效：
+
+- 种子文件 `MCP_CONFIG_PATH`（只读挂载，宿主机手工维护，永不改写）；托管文件 `MCP_MANAGED_PATH`（默认 `<DATA_DIR>/mcp_servers.json`，可写，原子替换并留 `.bak`）。
+- 托管文件存在时以它为准，否则回落到种子文件；首次写入自动继承当前生效内容（不丢配置）。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/mcp/servers` | 列出当前生效配置（env/headers 敏感键掩码 `****xxxx`）+ 生效来源（managed/seed）|
+| PUT | `/mcp/servers` | 整表替换：校验 → 原子落盘 → 热重载（`?verify=true` 顺带逐个做连通性测试）|
+| POST | `/mcp/servers/test` | 测试连通性并回显工具清单：`{"server":{...}}`（未保存的表单）或 `{"name":"..."}`（已保存项）|
+| DELETE | `/mcp/servers/{name}` | 删除单项并热重载 |
+
+```bash
+# 测试连通性（返回 tools:[{name,description,params}]，页面用它展示"有哪些工具"）
+curl -s -X POST http://localhost:8080/mcp/servers/test -H 'Content-Type: application/json' -d '{"name":"weknora"}'
+# 整表替换 + 逐个验证
+curl -s -X PUT 'http://localhost:8080/mcp/servers?verify=true' -H 'Content-Type: application/json' \
+  -H "X-Internal-Token: $MCP_ADMIN_TOKEN" -d '{"servers":[...]}'
+```
+
+- 写接口鉴权：请求头 `X-Internal-Token` 需等于 `MCP_ADMIN_TOKEN`（未配置该 env 则不校验，仅限内网部署）。
+- 生效机制：热替换 `AgentConfig.mcp_server_list`（每个任务读取该列表、MCP 连接是 per-run 的），**正在跑的任务不受影响**，无需重启容器。
+
 ## 构建与运行
 
 方式一：docker compose（推荐）

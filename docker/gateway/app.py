@@ -12,12 +12,14 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from . import config, logger, models as m, task_ui, trace_ui
+from . import config, logger, mcp_admin, models as m, task_ui, trace_ui
 from .log_sink_http import default_log_sink
 from .logger import set_log_sink
 from .middleware import TaskContextMiddleware
@@ -33,6 +35,8 @@ app.add_middleware(TaskContextMiddleware)
 
 _pool: TaskPool | None = None
 _trace_store: TraceStoreProcessor | None = None
+_agent_cfg: AgentConfig | None = None
+_mcp_lock: asyncio.Lock | None = None
 
 
 class SubmitRequest(BaseModel):
@@ -44,7 +48,7 @@ class SubmitRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup() -> None:
-    global _pool, _trace_store
+    global _pool, _trace_store, _agent_cfg
     from tortoise import Tortoise
 
     # Tortoise 1.x 用 contextvar 持有连接上下文；FastAPI 的请求处理在不同 asyncio task 运行，
@@ -77,19 +81,25 @@ async def startup() -> None:
     #  - skills: 扫描 SKILLS_DIR 生成 list/load/run_skill_script 工具。
     #  - mcp: 从 mcp_servers.json 构造 server 列表，每次 run 由 MCPServerManager 管理连接。
     from .skill_tool import refresh_skill_registry, build_skill_tools
-    from .mcp_config import build_servers, load_mcp_config
+    from .mcp_config import build_servers
 
     refresh_skill_registry()
     skill_tools = build_skill_tools()
-    mcp_server_list = build_servers(load_mcp_config(config.MCP_CONFIG_PATH))
-    agent_cfg = AgentConfig(skill_tools=skill_tools, mcp_server_list=mcp_server_list)
+    mcp_items, mcp_source = mcp_admin.load_effective()
+    mcp_server_list = build_servers(mcp_items)
+    _agent_cfg = AgentConfig(skill_tools=skill_tools, mcp_server_list=mcp_server_list)
     logger.log(
         "info",
         "agent_config_ready",
-        {"skills": len(skill_tools), "mcp_servers": len(mcp_server_list)},
+        {
+            "skills": len(skill_tools),
+            "mcp_servers": len(mcp_server_list),
+            "mcp_source": mcp_source,
+            "mcp_names": [str(i.get("name") or "") for i in mcp_items],
+        },
     )
 
-    _pool = TaskPool(agent_cfg=agent_cfg, slots=config.TASK_POOL_SLOTS)
+    _pool = TaskPool(agent_cfg=_agent_cfg, slots=config.TASK_POOL_SLOTS)
     await _pool.start()
 
 
@@ -247,6 +257,127 @@ async def delete_skill_http(skill_name: str) -> dict:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return result
+
+
+# --------------------------------------------------------------------------- #
+# MCP 服务器配置管理（文件存储 + 热重载，供 WeKnora「MCP 管理」页调用）
+#   GET    /mcp/servers              列出当前生效配置（env/headers 中的密钥已掩码）
+#   PUT    /mcp/servers              整表替换 → 校验 → 原子落盘 → 热重载（不重启容器）
+#   POST   /mcp/servers/test         连接单个 server 并回显工具清单（页面「测试」按钮）
+#   DELETE /mcp/servers/{name}       删除单个 server 并热重载
+# 鉴权：请求头 X-Internal-Token 需等于 MCP_ADMIN_TOKEN（未配置该 env 时不校验）。
+# --------------------------------------------------------------------------- #
+def _require_admin(request: Request) -> None:
+    token = (config.MCP_ADMIN_TOKEN or "").strip()
+    if not token:
+        return
+    if (request.headers.get("X-Internal-Token") or "").strip() != token:
+        raise HTTPException(status_code=401, detail="X-Internal-Token 无效")
+
+
+def _mcp_lock_obj() -> asyncio.Lock:
+    global _mcp_lock
+    if _mcp_lock is None:
+        _mcp_lock = asyncio.Lock()
+    return _mcp_lock
+
+
+async def _reload_mcp_servers() -> dict:
+    """按生效配置重建 MCP 服务器列表并热替换进 AgentConfig。
+
+    每个任务在 runner 里读取 agent_cfg.mcp_server_list，MCP 连接是 per-run 的，
+    因此替换该列表即可让新配置对后续任务生效，无需重启容器。
+    """
+    from .mcp_config import build_servers
+
+    async with _mcp_lock_obj():
+        items, source = mcp_admin.load_effective()
+        servers = build_servers(items)
+        if _agent_cfg is not None:
+            _agent_cfg.mcp_server_list = servers
+        names = [str(i.get("name") or "") for i in items]
+        logger.log("info", "mcp_reloaded", {"source": source, "count": len(servers), "names": names})
+        return {"source": source, "count": len(servers), "names": names}
+
+
+@app.get("/mcp/servers")
+async def list_mcp_servers() -> dict:
+    """列出当前生效的 MCP server 配置（密钥掩码）+ 生效来源（managed/seed）。"""
+    items, source = mcp_admin.load_effective()
+    return {
+        "data": mcp_admin.mask_items(items),
+        "source": source,
+        "count": len(items),
+        "managed_path": str(mcp_admin.managed_path()),
+        "seed_path": str(mcp_admin.seed_path()),
+    }
+
+
+class McpServersRequest(BaseModel):
+    servers: list[dict] = Field(default_factory=list, description="MCP server 全量配置（覆盖式替换）")
+
+
+@app.put("/mcp/servers")
+async def put_mcp_servers(
+    req: McpServersRequest,
+    request: Request,
+    verify: bool = False,
+    timeout: float | None = None,
+) -> dict:
+    """整表替换 MCP 配置：校验 → 原子落盘（留 .bak）→ 热重载。
+
+    密钥字段回传掩码（****xxxx）表示"保持不变"，会自动还原为已存原值。
+    verify=true 时逐个做连通性测试并回显工具清单。
+    """
+    _require_admin(request)
+    current, _src = mcp_admin.load_effective()
+    items = [mcp_admin.normalize_item(i) for i in req.servers]
+    errors = mcp_admin.validate_items(items)
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+    items = mcp_admin.merge_masked(items, current)
+    saved = mcp_admin.save_managed(items)
+    reload_result = await _reload_mcp_servers()
+    result: dict = {"saved": saved, "reload": reload_result, "data": mcp_admin.mask_items(items)}
+    if verify:
+        result["tests"] = [await mcp_admin.test_item(i, timeout) for i in items]
+    return result
+
+
+@app.post("/mcp/servers/test")
+async def test_mcp_server(request: Request, payload: dict, timeout: float | None = None) -> dict:
+    """测试连通性：body 传 {"server": {...}}（页面表单，可未保存）或 {"name": "..."}（已保存项）。
+
+    返回 {ok, name, transport, tool_count, tools:[{name,description,params}], error, elapsed_ms}。
+    """
+    _require_admin(request)
+    payload = payload if isinstance(payload, dict) else {}
+    item = payload.get("server")
+    current, _src = mcp_admin.load_effective()
+    if not item:
+        name = str(payload.get("name") or "")
+        item = next((i for i in current if str(i.get("name") or "") == name), None)
+        if item is None:
+            raise HTTPException(status_code=404, detail=f"未找到 MCP server: {name}")
+    item = mcp_admin.normalize_item(item)
+    errors = mcp_admin.validate_item(item)
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+    item = mcp_admin.merge_masked([item], current)[0]
+    return await mcp_admin.test_item(item, timeout)
+
+
+@app.delete("/mcp/servers/{server_name}")
+async def delete_mcp_server(server_name: str, request: Request) -> dict:
+    """删除单个 MCP server（写入托管配置）并热重载。"""
+    _require_admin(request)
+    current, source = mcp_admin.load_effective()
+    kept = [i for i in current if str(i.get("name") or "") != server_name]
+    if len(kept) == len(current):
+        raise HTTPException(status_code=404, detail=f"未找到 MCP server: {server_name}")
+    saved = mcp_admin.save_managed(kept)
+    reload_result = await _reload_mcp_servers()
+    return {"saved": saved, "reload": reload_result, "removed": server_name, "previous_source": source}
 
 
 @app.get("/traces/{trace_id}")

@@ -32,8 +32,14 @@ services:
       SKILLS_DIR: /srv/gateway/skills
       # 启用的 skill 白名单（逗号分隔；空=全部）。如: SKILLS_ENABLED: lp-deploy-ops,lp-project-ops
       SKILLS_ENABLED: ${SKILLS_ENABLED:-}
-      # MCP 工具配置（skill 配套的标准 MCP 服务器）
+      # MCP 工具配置：种子文件（只读挂载，宿主机手工维护；首次写入托管文件时继承其内容）
       MCP_CONFIG_PATH: /srv/gateway/mcp_servers.json
+      # 托管配置（可写）：由 /mcp/* 接口维护（WeKnora「MCP 管理」页下发），存在时优先于种子文件
+      MCP_MANAGED_PATH: /srv/gateway/data/mcp_servers.json
+      # /mcp/* 写接口鉴权令牌（请求头 X-Internal-Token）；留空则不校验（仅内网时可用）
+      MCP_ADMIN_TOKEN: ${MCP_ADMIN_TOKEN:-}
+      # MCP 连通性测试超时（秒）
+      MCP_TEST_TIMEOUT_S: ${MCP_TEST_TIMEOUT_S:-20}
     volumes:
       # 只挂载 data 子目录（DB 文件持久化）；挂 /srv/gateway 整目录会覆盖镜像内 gateway/ 代码
       - ./data:/srv/gateway/data
