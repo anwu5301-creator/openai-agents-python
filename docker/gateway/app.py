@@ -322,12 +322,14 @@ async def put_mcp_servers(
     req: McpServersRequest,
     request: Request,
     verify: bool = False,
+    force: bool = False,
     timeout: float | None = None,
 ) -> dict:
     """整表替换 MCP 配置：校验 → 原子落盘（留 .bak）→ 热重载。
 
     密钥字段回传掩码（****xxxx）表示"保持不变"，会自动还原为已存原值。
     verify=true 时逐个做连通性测试并回显工具清单。
+    force=true 才允许用空列表清空（防空下发误清网关配置）。
     """
     _require_admin(request)
     current, _src = mcp_admin.load_effective()
@@ -335,6 +337,14 @@ async def put_mcp_servers(
     errors = mcp_admin.validate_items(items)
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
+    if not items and current and not force:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"拒绝用空列表覆盖（当前生效 {len(current)} 个 server）。"
+                "若确认要清空网关 MCP 配置，请加 ?force=true 重试。"
+            ),
+        )
     items = mcp_admin.merge_masked(items, current)
     saved = mcp_admin.save_managed(items)
     reload_result = await _reload_mcp_servers()

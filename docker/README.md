@@ -129,7 +129,7 @@ SKILL_SCRIPT_TIMEOUT_S=120              # 脚本超时
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/mcp/servers` | 列出当前生效配置（env/headers 敏感键掩码 `****xxxx`）+ 生效来源（managed/seed）|
-| PUT | `/mcp/servers` | 整表替换：校验 → 原子落盘 → 热重载（`?verify=true` 顺带逐个做连通性测试）|
+| PUT | `/mcp/servers` | 整表替换：校验 → 原子落盘 → 热重载（`?verify=true` 顺带逐个测试；空列表需 `?force=true` 才允许清空）|
 | POST | `/mcp/servers/test` | 测试连通性并回显工具清单：`{"server":{...}}`（未保存的表单）或 `{"name":"..."}`（已保存项）|
 | DELETE | `/mcp/servers/{name}` | 删除单项并热重载 |
 
