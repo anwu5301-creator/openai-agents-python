@@ -123,7 +123,7 @@ SKILL_SCRIPT_TIMEOUT_S=120              # 脚本超时
 
 配置采用「种子 + 托管」两段式，**无需重启容器**即可生效：
 
-- 种子文件 `MCP_CONFIG_PATH`（只读挂载，宿主机手工维护，永不改写）；托管文件 `MCP_MANAGED_PATH`（默认 `<DATA_DIR>/mcp_servers.json`，可写，原子替换并留 `.bak`）。
+- 种子文件 `MCP_CONFIG_PATH`（只读挂载，宿主机手工维护），托管文件 `MCP_MANAGED_PATH`（默认 `<DATA_DIR>/mcp_servers.managed.json`，可写）。
 - 托管文件存在时以它为准，否则回落到种子文件；首次写入自动继承当前生效内容（不丢配置）。
 
 | 方法 | 路径 | 说明 |

@@ -2,7 +2,7 @@
 
 设计（无 DB、无重启）：
   - 种子文件：config.MCP_CONFIG_PATH（宿主机手工维护、只读挂载）——作为初始/兜底配置，永不改写。
-  - 托管文件：config.MCP_MANAGED_PATH（默认 <DATA_DIR>/mcp_servers.json，可写）——由 /mcp/servers
+  - 托管文件：config.MCP_MANAGED_PATH（默认 <DATA_DIR>/mcp_servers.managed.json，可写）——由 /mcp/servers
     接口维护，原子替换（temp + os.replace）并保留 .bak。
 托管文件存在时以它为准；不存在时回落到种子文件；首次写入自动继承当前生效内容，不丢配置。
 
@@ -39,25 +39,33 @@ def seed_path() -> Path:
     return Path(config.MCP_CONFIG_PATH)
 
 
-def _read_json(path: Path) -> list[dict[str, Any]]:
+def _read_json(path: Path) -> list[dict[str, Any]] | None:
+    """读取 JSON 数组。文件不存在或解析失败返回 None（供上层回退），合法空数组返回 []。"""
     if not path.is_file():
-        return []
+        return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
-        logger.log("error", "mcp_config_invalid", {"path": str(path), "error": repr(e)})
-        return []
-    return [x for x in data if isinstance(x, dict)] if isinstance(data, list) else []
+        logger.log("warn", "mcp_config_unreadable", {"path": str(path), "error": repr(e)})
+        return None
+    if not isinstance(data, list):
+        logger.log("warn", "mcp_config_not_a_list", {"path": str(path)})
+        return None
+    return [x for x in data if isinstance(x, dict)]
 
 
 def load_effective() -> tuple[list[dict[str, Any]], str]:
-    """返回 (配置项列表, 来源)。来源：managed / seed / empty。"""
-    mp = managed_path()
-    if mp.is_file():
-        return _read_json(mp), "managed"
-    sp = seed_path()
-    if sp.is_file():
-        return _read_json(sp), "seed"
+    """返回 (配置项列表, 来源)。来源：managed / seed / empty。
+
+    托管文件缺失或损坏时回退种子文件（避免一次坏写把生效配置清空）；
+    托管文件是合法空数组 [] 时视为"用户清空了配置"，不回退。
+    """
+    items = _read_json(managed_path())
+    if items is not None:
+        return items, "managed"
+    items = _read_json(seed_path())
+    if items is not None:
+        return items, "seed"
     return [], "empty"
 
 
