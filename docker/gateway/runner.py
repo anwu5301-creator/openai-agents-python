@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 
 from agents import Agent, Runner
+from agents.tracing import trace as trace_ctx
 
 from . import config, logger, models as m
 
@@ -122,8 +123,16 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
     error_detail: str | None = None
     output_text: str | None = None
     cancelled = False
+    # SDK trace id：trace 存储（/traces/{id}）按 OpenAI-Agents 的 trace_id 建索引，
+    # 而 task.trace_id 是业务 run id（gateway-run-xxx），两者此前没有任何关联，
+    # 导致按 task.trace_id 查 trace 必然 404。这里显式开一个 trace 作用域，
+    # 拿到 SDK trace id 后写回任务（config_json 已存在，无需改表结构），
+    # /tasks/{id} 会以 sdk_trace_id 返回，供业务侧直接查 trace。
+    sdk_trace_id: str | None = None
     try:
-        result = await _run_with_servers()
+        with trace_ctx("Agent workflow") as active_trace:
+            sdk_trace_id = getattr(active_trace, "trace_id", None)
+            result = await _run_with_servers()
         output_text = result.final_output
         logger.log("info", "agent_run_end", {"task_id": task_id, "runs_ms": _ms(t0)})
     except asyncio.CancelledError:
@@ -135,6 +144,16 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
         logger.log("error", "agent_run_error", {"task_id": task_id, "error": error_detail})
     finally:
         task.runs_ms = _ms(t0)
+        if sdk_trace_id:
+            # 持久化 SDK trace id（config_json 是既有 JSON 字段，追加键不影响业务读取）
+            cfg_map = dict(task.config_json or {})
+            cfg_map["sdk_trace_id"] = sdk_trace_id
+            task.config_json = cfg_map
+            logger.log(
+                "info",
+                "agent_trace_linked",
+                {"task_id": task_id, "trace_id": sdk_trace_id},
+            )
         try:
             if cancelled:
                 task.validate_transition(m.TaskStatus.CANCELLED)

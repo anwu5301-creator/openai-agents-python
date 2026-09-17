@@ -94,6 +94,8 @@ class TaskResult:
     trace_id: str | None
     agent_name: str | None
     runs_ms: int | None
+    # SDK trace id（OpenAI-Agents 的 trace_xxx），用于查 /traces/{id}。
+    sdk_trace_id: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -103,6 +105,7 @@ class TaskResult:
             "error_detail": self.error_detail,
             "trace_id": self.trace_id,
             "agent_name": self.agent_name,
+            "sdk_trace_id": self.sdk_trace_id,
             "runs_ms": self.runs_ms,
         }
 

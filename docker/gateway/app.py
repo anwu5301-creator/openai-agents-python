@@ -169,6 +169,7 @@ async def get_task(task_id: str) -> dict:
         trace_id=task.trace_id,
         agent_name=task.agent_name,
         runs_ms=task.runs_ms,
+        sdk_trace_id=(task.config_json or {}).get("sdk_trace_id"),
     )
     return result.to_dict()
 
