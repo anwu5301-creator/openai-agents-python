@@ -7,6 +7,11 @@ GET /traces 查询，从而不依赖 OpenAI 官方 Trace Viewer 就能自建监�
 实现上是标准 TracingProcessor 的旁路收集：on_span_end 记录每个 span 的 export()
 序列化结果，on_trace_end 组装整棵 trace 追加到 JSONL。所有异常一律吞掉，绝不影响
 agent 执行。
+
+实时日志（2026-09-22）：运行中的任务也能查到 trace —— 每个 span 结束即把
+「当前已收集的 span 快照」更新到内存 _live（按 trace_id 隔离，天然支持多任务并发），
+on_trace_end 时正式写 JSONL 并移除 live 快照。查询接口优先 jsonl 正式行，其次
+recent 内存副本，最后 live 运行中快照（带 live=True 标记）。
 """
 
 from __future__ import annotations
@@ -33,15 +38,15 @@ def _serializable(value: Any) -> Any:
 
 
 class TraceStoreProcessor(TracingProcessor):
-    """收集每次 run 的 Trace/Span，保存到 Tortoise 持久化，供 /traces 查询。
+    """收集每次 run 的 Trace/Span，保存到 JSONL 持久化，供 /traces 查询。
 
     TRACE_STORE_ENABLED=False（或 config 默认）时可跳过存储，仅保留内存最近若干条。
     """
 
     def __init__(self) -> None:
-        self._t0 = 0.0
-        self._spans: list[dict[str, Any]] = []
-        self._trace_name: str | None = None
+        # 运行中 trace 的实时快照：trace_id -> {trace_id, name, t0, spans, live}
+        # dict 按 trace_id 隔离 → 多任务并发互不串扰（修复旧版单例 _spans 的并发覆盖）。
+        self._live: dict[str, dict[str, Any]] = {}
         self._enabled = config.TRACE_STORE_ENABLED if hasattr(config, "TRACE_STORE_ENABLED") else True
         # 最近 N 条 trace 的裸内存副本（TRACE_STORE_ENABLED 关闭时也能看最近执行）
         self._recent: list[dict[str, Any]] = []
@@ -50,12 +55,21 @@ class TraceStoreProcessor(TracingProcessor):
     # --- TracingProcessor 钩子 ---
 
     def on_trace_start(self, trace: Trace) -> None:
-        self._t0 = time.monotonic()
-        self._spans = []
         try:
-            self._trace_name = trace.name
+            tid: str = trace.trace_id
         except Exception:  # noqa: BLE001
-            self._trace_name = None
+            tid = "unknown"
+        try:
+            name = trace.name
+        except Exception:  # noqa: BLE001
+            name = None
+        self._live[tid] = {
+            "trace_id": tid,
+            "name": name,
+            "t0": time.monotonic(),
+            "spans": [],
+            "live": True,
+        }
 
     def on_span_start(self, span: Span) -> None:
         # 无需在 start 时记录；end 时统一 export。
@@ -66,35 +80,65 @@ class TraceStoreProcessor(TracingProcessor):
             exported = span.export()
         except Exception:  # noqa: BLE001
             exported = None
-        if exported is not None:
-            self._spans.append(_serializable(exported))
-
-    def _assemble(self, trace: Trace) -> dict[str, Any]:
+        if exported is None:
+            return
         try:
-            trace_id: str = trace.trace_id
+            tid: str = span.trace_id
         except Exception:  # noqa: BLE001
-            trace_id = "unknown"
-        try:
-            ended_at = trace.ended_at if hasattr(trace, "ended_at") else None
-        except Exception:  # noqa: BLE001
-            ended_at = None
-        return {
-            "trace_id": trace_id,
-            "name": self._trace_name,
-            "runs_ms": int((time.monotonic() - self._t0) * 1000),
-            "span_count": len(self._spans),
-            # 关键：task_id 作为 metadata 由 run 时注入（若有）。这里顺带从 trace 属性兜底读。
-            "spans": self._spans,
-        }
+            tid = ""
+        live = self._live.get(tid)
+        if live is not None:
+            live.setdefault("spans", []).append(_serializable(exported))
+            try:
+                live["runs_ms"] = int((time.monotonic() - live["t0"]) * 1000)
+            except Exception:  # noqa: BLE001
+                pass
 
     def on_trace_end(self, trace: Trace) -> None:
-        data = self._assemble(trace)
+        try:
+            tid: str = trace.trace_id
+        except Exception:  # noqa: BLE001
+            tid = "unknown"
+        live = self._live.pop(tid, None) or {}
+        data = {
+            "trace_id": tid,
+            "name": live.get("name") or getattr(trace, "name", None),
+            "runs_ms": live.get("runs_ms") or 0,
+            "span_count": len(live.get("spans") or []),
+            "spans": live.get("spans") or [],
+        }
         self._keep_recent(data)
         # 追加到 JSONL 文件：同步、确定、可靠。同时也是自建 trace 的持久化存储。
         self._append_jsonl(data)
-        self._spans = []
-        self._trace_name = None
-        self._t0 = 0.0
+
+    # --- 实时快照（运行中查询） ---
+
+    def get_live(self, trace_id: str) -> dict[str, Any] | None:
+        """运行中的 trace 快照（含已完成 span 树），未运行/已完成返回 None。"""
+        live = self._live.get(trace_id)
+        if live is None:
+            return None
+        return {
+            "trace_id": live["trace_id"],
+            "name": live.get("name"),
+            "runs_ms": live.get("runs_ms") or 0,
+            "spans": live.get("spans") or [],
+            "live": True,
+        }
+
+    def live_rows(self) -> list[dict[str, Any]]:
+        """全部运行中 trace 的列表视图（span_count 实时）。"""
+        rows: list[dict[str, Any]] = []
+        for live in self._live.values():
+            rows.append(
+                {
+                    "trace_id": live["trace_id"],
+                    "name": live.get("name"),
+                    "span_count": len(live.get("spans") or []),
+                    "live": True,
+                }
+            )
+        return rows
 
     # --- 持久化与查询 ---
 

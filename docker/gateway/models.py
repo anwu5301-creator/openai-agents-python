@@ -73,6 +73,7 @@ class TraceResult:
     name: str | None
     created_at: str | None
     spans: list | None
+    live: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -80,6 +81,7 @@ class TraceResult:
             "name": self.name,
             "created_at": self.created_at,
             "spans": self.spans,
+            "live": self.live,
         }
 
 

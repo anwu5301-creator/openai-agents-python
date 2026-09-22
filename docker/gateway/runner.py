@@ -132,6 +132,13 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
     try:
         with trace_ctx("Agent workflow") as active_trace:
             sdk_trace_id = getattr(active_trace, "trace_id", None)
+            if sdk_trace_id:
+                # 实时日志（2026-09-22）：运行开始即回传 SDK trace id 并落库，
+                # 任务运行中监控页即可按 /traces/{sdk_trace_id} 查到实时 span 快照。
+                _cfg_map = dict(task.config_json or {})
+                _cfg_map["sdk_trace_id"] = sdk_trace_id
+                task.config_json = _cfg_map
+                await task.save()
             result = await _run_with_servers()
         output_text = result.final_output
         logger.log("info", "agent_run_end", {"task_id": task_id, "runs_ms": _ms(t0)})

@@ -406,6 +406,9 @@ async def get_trace(trace_id: str) -> dict:
                 if r["trace_id"] == trace_id:
                     found = r
                     break
+        # 实时日志（2026-09-22）：运行中的任务返回内存 live 快照（live=True）
+        if found is None:
+            found = _trace_store.get_live(trace_id)
     if found is None:
         raise HTTPException(status_code=404, detail="trace 不存在")
     return m.TraceResult(
@@ -413,6 +416,7 @@ async def get_trace(trace_id: str) -> dict:
         name=found["name"],
         created_at=None,
         spans=found["spans"],
+        live=bool(found.get("live")),
     ).to_dict()
 
 
@@ -428,6 +432,9 @@ async def list_traces(limit: int = 20, offset: int = 0) -> dict:
         }
         for r in rows
     ]
+    # 实时日志（2026-09-22）：运行中的 trace 排在列表最前（live=True 标记）
+    live_items = _trace_store.live_rows() if _trace_store is not None else []
+    items = live_items + items
     return {"items": items, "count": len(items)}
 
 
