@@ -104,11 +104,28 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
         # 每个任务从配置重建 server 对象（保证 session 隔离）
         server_list = build_servers(load_mcp_config(config.MCP_CONFIG_PATH))
         async with MCPServerManager(server_list) as manager:
+            # 主 Agent 进程也用任务级模型（2026-09-23，WEK-46 主进程侧）：
+            # WeKnora 按知识库绑定模型随任务传入 model/base_url/api_key →
+            # 任务级配置优先于容器 env LLM_MODEL/LLM_BASE_URL/LLM_API_KEY。
+            # 并发安全：每任务自建 AsyncOpenAI client + OpenAIChatCompletionsModel，
+            # 不做 set_default_openai_client() 全局替换（8 槽并发会互相覆盖全局 client）。
+            task_model_name = str(cfg.get("model") or config.LLM_MODEL)
+            task_base_url = str(cfg.get("base_url") or config.LLM_BASE_URL)
+            task_api_key = str(cfg.get("api_key") or config.LLM_API_KEY)
+            if cfg.get("model") or cfg.get("base_url") or cfg.get("api_key"):
+                from openai import AsyncOpenAI
+                from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
+
+                task_client = AsyncOpenAI(base_url=task_base_url, api_key=task_api_key)
+                agent_model = OpenAIChatCompletionsModel(model=task_model_name, openai_client=task_client)
+            else:
+                # 无任务级 LLM 配置：退化为默认字符串模型（走启动时 set_default_openai_client 的 client）
+                agent_model = config.LLM_MODEL
             # mcp_servers 必须为 list（空列表也合法），不能传 None
             agent = Agent(
                 name=task.agent_name or cfg.get("agent_name") or "gateway-agent",
                 instructions=instructions,
-                model=config.LLM_MODEL,
+                model=agent_model,
                 tools=tools if tools else None,
                 mcp_servers=list(manager.active_servers),
             )
