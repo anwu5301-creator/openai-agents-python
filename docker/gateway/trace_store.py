@@ -183,6 +183,35 @@ class TraceStoreProcessor(TracingProcessor):
         end = offset + limit
         return rows[offset:end]
 
+    def find_trace(self, trace_id: str) -> dict[str, Any] | None:
+        """按 trace_id 在 JSONL 里定位单条 trace（懒扫描）。
+
+        read_jsonl 会全文件 json.loads 每一行（文件膨胀到几百 MB 后单次查询
+        数十秒，超过 WeKnora 侧 10s 的网关调用超时，表现为
+        "context deadline exceeded"）。这里逐行做字符串粗筛：只有含目标
+        trace_id 字面的行才 json.loads 并精确比对，命中即返回。
+        """
+        if not trace_id:
+            return None
+        needle = f'"trace_id": "{trace_id}"'
+        try:
+            path = self.jsonl_path()
+            if not os.path.isfile(path):
+                return None
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if needle not in line:
+                        continue
+                    try:
+                        row = json.loads(line.strip())
+                    except json.JSONDecodeError:
+                        continue
+                    if row.get("trace_id") == trace_id:
+                        return row
+        except OSError:
+            pass
+        return None
+
     # --- 内存最近记录 ---
 
     def _keep_recent(self, data: dict[str, Any]) -> None:

@@ -396,10 +396,9 @@ async def get_trace(trace_id: str) -> dict:
     """返回一次 agent run 的完整追踪（trace + span 树），来源为 data/traces.jsonl。"""
     found = None
     if _trace_store is not None:
-        for r in _trace_store.read_jsonl(limit=200):
-            if r["trace_id"] == trace_id:
-                found = r
-                break
+        # 懒扫描 JSONL（只解析命中行）优先：read_jsonl 会全文件 json.loads，
+        # 文件大了以后单次查询数十秒，超过 WeKnora 侧 10s 超时。
+        found = _trace_store.find_trace(trace_id)
         # 兜底：内存 recent 里也找
         if found is None:
             for r in _trace_store.recent():
