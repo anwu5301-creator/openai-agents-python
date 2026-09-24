@@ -236,6 +236,27 @@ def delete_skill(skill_name: str) -> dict:
 def build_skill_tools() -> list[Any]:
     """构造 skill 相关 function_tool 列表，供 Agent(tools=[...]) 使用。"""
 
+    _todos: list[str] = []
+
+    @function_tool
+    def todowrite(items: list[str]) -> str:
+        """记录当前任务待办清单（覆盖式）。复杂多步骤任务建议先规划再执行。"""
+        _todos[:] = [str(i) for i in items]
+        return f"已记录 {len(_todos)} 项待办: {_todos}"
+
+    @function_tool
+    def todoread() -> str:
+        """读取当前任务待办清单。"""
+        if not _todos:
+            return "待办清单为空。"
+        return "\n".join(f"- {i}" for i in _todos)
+
+    @function_tool
+    def todoappend(item: str) -> str:
+        """向待办清单追加一项。"""
+        _todos.append(str(item))
+        return f"已追加。当前 {len(_todos)} 项待办。"
+
     @function_tool
     def list_skills(tag: str | None = None) -> str:
         """列出当前可用的所有技能及其用途。tag 可传如 'devops' 过滤；模型据此选择要用的技能。"""
@@ -310,7 +331,7 @@ def build_skill_tools() -> list[Any]:
             ret += f"\nstderr:\n{err}"
         return ret
 
-    return [list_skills, load_skill, run_skill_script, bash]
+    return [todowrite, todoread, todoappend, list_skills, load_skill, run_skill_script, bash]
 
 
 def sys_executable() -> str:
