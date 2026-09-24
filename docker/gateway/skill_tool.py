@@ -287,7 +287,30 @@ def build_skill_tools() -> list[Any]:
             ret += f"\nstderr:\n{err}"
         return ret
 
-    return [list_skills, load_skill, run_skill_script]
+    @function_tool
+    def bash(command: str) -> str:
+        """在沙箱内执行任意 shell 命令并返回 stdout/stderr。技能 SKILL.md 中的
+        `python3 scripts/xxx.py <args>` 形式命令可直接在此执行（需 cd 到技能目录；
+        scripts 位于技能目录 scripts/ 下）。非交互、超时控制。"""
+        try:
+            proc = subprocess.run(
+                command, shell=True, capture_output=True, text=True,
+                timeout=config.SKILL_SCRIPT_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return f"命令超时(>{config.SKILL_SCRIPT_TIMEOUT_S}s): {command[:200]}"
+        except Exception as e:  # noqa: BLE001
+            return f"命令执行出错: {e!r}"
+        out = proc.stdout.strip()
+        err = proc.stderr.strip()
+        ret = f"(exit {proc.returncode})"
+        if out:
+            ret += f"\nstdout:\n{out}"
+        if err:
+            ret += f"\nstderr:\n{err}"
+        return ret
+
+    return [list_skills, load_skill, run_skill_script, bash]
 
 
 def sys_executable() -> str:
