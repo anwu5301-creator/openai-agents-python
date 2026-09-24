@@ -116,7 +116,11 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
                 from openai import AsyncOpenAI
                 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 
-                task_client = AsyncOpenAI(base_url=task_base_url, api_key=task_api_key)
+                task_client = AsyncOpenAI(
+                    base_url=task_base_url,
+                    api_key=task_api_key,
+                    max_retries=config.LLM_MAX_RETRIES,
+                )
                 agent_model = OpenAIChatCompletionsModel(model=task_model_name, openai_client=task_client)
             else:
                 # 无任务级 LLM 配置：退化为默认字符串模型（走启动时 set_default_openai_client 的 client）

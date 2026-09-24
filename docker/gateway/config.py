@@ -37,6 +37,9 @@ DATA_DIR: str = os.environ.get("GATEWAY_DATA_DIR", "/srv/gateway/data")
 LLM_BASE_URL: str = os.environ.get("LLM_BASE_URL", "http://llm-gateway:8000/v1")
 LLM_API_KEY: str = os.environ.get("LLM_API_KEY", "unknown")
 LLM_MODEL: str = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+# OpenAI SDK 429/5xx 自动重试次数（InferAI RPM 限流时 429 瞬时，重试后成功；
+# 默认 SDK 重试仅 2 次不够，2026-09-24 批次实测 8 并发触发 429 直接失败）
+LLM_MAX_RETRIES: int = _int("LLM_MAX_RETRIES", 5)
 LLM_API: str = os.environ.get("LLM_API", "chat")
 
 # 追踪策略：
