@@ -101,6 +101,17 @@ async def startup() -> None:
 
     _pool = TaskPool(agent_cfg=_agent_cfg, slots=config.TASK_POOL_SLOTS)
     await _pool.start()
+    # 重启恢复（2026-09-25 修复）：sqlite 持久化任务在进程重启后不会自动回填内存队列，
+    # 导致 pending/queued 任务永远卡死（worker 只消费内存 asyncio.Queue）。
+    # startup 时把 DB 中仍未开始的任务重新入队。
+    from . import models as m
+    stale = await m.TaskModel.filter(status=m.TaskStatus.PENDING).all()
+    recovered = 0
+    for t in stale:
+        if await _pool.enqueue(t.id):
+            recovered += 1
+    if recovered:
+        logger.log("info", "task_queue_recovered", {"recovered": recovered})
 
 
 @app.on_event("shutdown")
