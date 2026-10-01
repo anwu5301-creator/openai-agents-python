@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -71,11 +72,13 @@ async def startup() -> None:
     # 注意：不要调用 set_tracing_disabled(True) —— 那会全局关闭 trace/span 生成，
     #      导致本 Processor 收不到事件。本地追踪保持开启；"不向 OpenAI 上报"由
     #      llm_client.configure_default_llm() 里的 use_for_tracing=False 保证。
-    from agents.tracing import add_trace_processor
-    add_trace_processor(BusinessLogProcessor())
-    # 自建 Trace 存储：收集完整 span 树落库，提供 GET /traces 查询（不依赖 OpenAI Viewer）。
+    # 2026-09-25 修复：默认处理器列表含 OpenAI 官方 exporter（BatchTraceProcessor），
+    #   无 OPENAI_API_KEY 时每次 span 结束尝试导出挂起（实测 Runner.run 卡死，
+    #   日志刷屏 "OPENAI_API_KEY is not set, skipping trace export"）。
+    #   改用 set_trace_processors 整体替换，去掉官方 exporter，只留自定义收集器。
+    from agents.tracing import set_trace_processors
     _trace_store = TraceStoreProcessor()
-    add_trace_processor(_trace_store)
+    set_trace_processors([BusinessLogProcessor(), _trace_store])
 
     # Skill 与 MCP 工具的全局组装（全局共享）：
     #  - skills: 扫描 SKILLS_DIR 生成 list/load/run_skill_script 工具。
@@ -221,7 +224,16 @@ async def cancel_task(task_id: str) -> dict:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok"}
+    pool_info = {}
+    if _pool is not None:
+        pool_info = {
+            "workers": len(_pool._workers),
+            "workers_alive": [not w.done() for w in _pool._workers],
+            "queue_size": _pool._queue.qsize(),
+            "pending": list(_pool._pending.keys())[:5],
+            "running": list(_pool._running.keys())[:5],
+        }
+    return {"status": "ok", "pool": pool_info}
 
 
 @app.get("/skills")
@@ -404,46 +416,58 @@ async def delete_mcp_server(server_name: str, request: Request) -> dict:
 
 @app.get("/traces/{trace_id}")
 async def get_trace(trace_id: str) -> dict:
-    """返回一次 agent run 的完整追踪（trace + span 树），来源为 data/traces.jsonl。"""
-    found = None
+    """返回一次 agent run 的完整追踪（trace span 树）。
+
+    来源优先级：DB 摘要 + MinIO/本地对象（新）-> 内存 recent -> JSONL 懒扫描（旧兜底）
+    -> 内存 live（运行中）。
+    """
+    found: dict[str, Any] | None = None
     if _trace_store is not None:
-        # 懒扫描 JSONL（只解析命中行）优先：read_jsonl 会全文件 json.loads，
-        # 文件大了以后单次查询数十秒，超过 WeKnora 侧 10s 超时。
-        found = _trace_store.find_trace(trace_id)
-        # 兜底：内存 recent 里也找
+        # 新存储：DB 主键 O(1) 命中 + 大对象。
+        found = await _trace_store.get_trace(trace_id)
+        # 兜底：内存 recent 里也找（TRACE_STORE_ENABLED 关闭 / 尚未落库）。
         if found is None:
             for r in _trace_store.recent():
                 if r["trace_id"] == trace_id:
                     found = r
                     break
-        # 实时日志（2026-09-22）：运行中的任务返回内存 live 快照（live=True）
+        # 旧 JSONL 懒扫描（迁移前遗留数据）。
         if found is None:
-            found = _trace_store.get_live(trace_id)
+            found = _trace_store.find_trace(trace_id)
+    # 实时日志：运行中的任务返回内存 live 快照（live=True）。
+    if found is None and _trace_store is not None:
+        found = _trace_store.get_live(trace_id)
     if found is None:
         raise HTTPException(status_code=404, detail="trace 不存在")
     return m.TraceResult(
         trace_id=found["trace_id"],
-        name=found["name"],
-        created_at=None,
-        spans=found["spans"],
+        name=found.get("name"),
+        created_at=found.get("created_at"),
+        spans=found.get("spans", []),
         live=bool(found.get("live")),
     ).to_dict()
 
 
 @app.get("/traces")
 async def list_traces(limit: int = 20, offset: int = 0) -> dict:
-    """列出最近的 trace（按完成时间倒序），不含 span 明细，便于总览。"""
-    rows = _trace_store.read_jsonl(limit=max(1, min(limit, 100)), offset=max(0, offset)) if _trace_store else []
+    """列出最近的 trace 摘要（按完成时间倒序），不含 span 明细，便于总览。"""
+    lim = max(1, min(limit, 100))
+    off = max(0, offset)
+    if _trace_store is not None:
+        # 新存储：DB 摘要（created_at 倒序，O(1) 分页）。
+        rows = await _trace_store.list_traces(limit=lim, offset=off)
+    else:
+        rows = []
     items = [
         {
             "trace_id": r["trace_id"],
-            "name": r["name"],
-            "span_count": len(r["spans"]),
+            "name": r.get("name"),
+            "span_count": r.get("span_count", 0),
         }
         for r in rows
     ]
-    # 实时日志（2026-09-22）：运行中的 trace 排在列表最前（live=True 标记）
-    live_items = _trace_store.live_rows() if _trace_store is not None else []
+    # 实时日志：运行中的 trace 排在列表最前（live=True 标记）。
+    live_items = _trace_store.live_rows() if _trace_store else []
     items = live_items + items
     return {"items": items, "count": len(items)}
 
@@ -451,9 +475,12 @@ async def list_traces(limit: int = 20, offset: int = 0) -> dict:
 @app.get("/ui", response_class=HTMLResponse)
 async def trace_ui_list() -> str:
     """Trace 展示页：最近 trace 列表（浏览器可视化）。"""
-    rows = _trace_store.read_jsonl(limit=50) if _trace_store else []
+    if _trace_store is not None:
+        rows = await _trace_store.list_traces(limit=50)
+    else:
+        rows = []
     items = [
-        {"trace_id": r["trace_id"], "name": r["name"], "span_count": len(r["spans"])}
+        {"trace_id": r["trace_id"], "name": r.get("name"), "span_count": r.get("span_count", 0)}
         for r in rows
     ]
     return trace_ui.render_trace_list_html(items)
@@ -503,18 +530,18 @@ async def task_ui_detail(task_id: str) -> str:
 
 @app.get("/ui/{trace_id}", response_class=HTMLResponse)
 async def trace_ui_detail(trace_id: str) -> str:
-    """Trace 展示页：单个 run 的 span 树（可折叠展开）。"""
-    found = None
+    """Trace 展示页：单个 run span 树（可折叠展开）。"""
+    found: dict[str, Any] | None = None
     if _trace_store is not None:
-        for r in _trace_store.read_jsonl(limit=500):
-            if r["trace_id"] == trace_id:
-                found = r
-                break
+        # 新存储：DB + 大对象。
+        found = await _trace_store.get_trace(trace_id)
         if found is None:
             for r in _trace_store.recent():
                 if r["trace_id"] == trace_id:
                     found = r
                     break
+        if found is None:
+            found = _trace_store.find_trace(trace_id)
     if found is None:
         raise HTTPException(status_code=404, detail="trace 不存在")
-    return trace_ui.render_trace_detail_html(found["trace_id"], found["name"], found["spans"])
+    return trace_ui.render_trace_detail_html(found["trace_id"], found.get("name"), found.get("spans", []))

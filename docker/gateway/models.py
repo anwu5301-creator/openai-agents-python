@@ -67,6 +67,27 @@ class TaskModel(Model):
             )
 
 
+class TraceModel(Model):
+    """Trace 摘要行（索引层）。
+
+    单条 trace 的完整 span 树（可达数十 MB）作为大对象存 MinIO（key 形如
+    traces/YYYY/MM/DD/<trace_id>.json）；这里只存摘要，供
+    「最近 N 条列表」与「按 trace_id 定位」走主键 O(1) 命中，
+    避免 JSONL 全文件扫描（3.6GB 时单次查询 20+s）。
+    """
+
+    trace_id = fields.CharField(max_length=64, pk=True)
+    name = fields.CharField(max_length=256, null=True, default=None)
+    runs_ms = fields.IntField(null=True, default=0)
+    span_count = fields.IntField(default=0)
+    # 大对象在 MinIO 里的 key；本地退化时为相对路径。
+    object_key = fields.CharField(max_length=256, default="")
+    created_at = fields.DatetimeField(auto_now_add=True, index=True)
+
+    class Meta:
+        table = "agent_traces"
+
+
 @dataclass
 class TraceResult:
     trace_id: str

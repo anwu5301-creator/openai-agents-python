@@ -200,10 +200,19 @@ def get_skill_detail(skill_name: str) -> dict:
                     files.append({"path": rel, "size": p.stat().st_size})
                 except OSError:
                     pass
+    # SKILL.md 全文（平台「技能详情」页展示；缺失时返回空串）
+    skill_md = ""
+    md_path = base / "SKILL.md"
+    if md_path.is_file():
+        try:
+            skill_md = md_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            skill_md = ""
     return {
         "name": spec.name,
         "description": spec.description,
         "path": str(spec.path),
+        "content": skill_md,
         "scripts": list(spec.scripts),
         "file_count": len(files),
         "files": files[:500],  # 文件清单上限，避免超大技能撑爆响应

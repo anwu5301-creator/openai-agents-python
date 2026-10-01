@@ -106,7 +106,26 @@ TASK_STALE_TIMEOUT_S: float = float(os.environ.get("TASK_STALE_TIMEOUT_S", "600"
 AGENT_MAX_TURNS: int = _int("AGENT_MAX_TURNS", 60)
 
 # --------------------------------------------------------------------------- #
-# 自建 Trace 存储（TraceStoreProcessor → TraceModel → /traces 查询）
+# MinIO 对象存储（Trace 大对象 spans 的持久化后端）
+# --------------------------------------------------------------------------- #
+# 摘要表 agent_traces 存 SQLite（gateway.db，Tortoise ORM 自动建表）；
+# 单条 trace 的完整 span 树（可达数十 MB）作为对象存 MinIO，key 形如
+#   traces/<YYYY>/<MM>/<DD>/<trace_id>.json
+# 查询时 DB 定位摘要 + MinIO 取大对象，避免 JSONL 全文件扫描。
+# 未配置 MINIO_ENDPOINT 时退化为本地文件（data_dir/traces/<key>），
+# 保证 MinIO 缺失时功能不挂、部署环境无需改动也能跑。
+MINIO_ENDPOINT: str = os.environ.get("MINIO_ENDPOINT", "")
+MINIO_ACCESS_KEY: str = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY: str = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
+MINIO_BUCKET: str = os.environ.get("MINIO_BUCKET", "agent-gateway-traces")
+# MinIO 一般不启用证书；内网走 path-style 访问 bucket。
+MINIO_USE_SSL: bool = os.environ.get("MINIO_USE_SSL", "false").lower()in ("1", "true", "yes")
+MINIO_PATH_STYLE: bool = os.environ.get("MINIO_PATH_STYLE", "true").lower()in ("1", "true", "yes")
+# 对象读写超时（秒）。大对象（数十 MB）留足余量。
+MINIO_TIMEOUT_S: int = _int("MINIO_TIMEOUT_S", 60)
+
+# --------------------------------------------------------------------------- #
+# Trace 存储（TraceStoreProcessor TraceModel /traces查询）
 # --------------------------------------------------------------------------- #
 # 开启时每次 run 的完整 span 树落库；关闭时仅保留内存最近若干条（recent）。
 TRACE_STORE_ENABLED: bool = os.environ.get("TRACE_STORE_ENABLED", "1").lower() in ("1", "true", "yes")

@@ -126,12 +126,16 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
                 # 无任务级 LLM 配置：退化为默认字符串模型（走启动时 set_default_openai_client 的 client）
                 agent_model = config.LLM_MODEL
             # mcp_servers 必须为 list（空列表也合法），不能传 None
+            # 2026-09-25 修复：不挂 MCP server——Agent 主循环挂 MCP 时 SDK 会把 30 个
+            # MCP 工具并入工具集，LLM 误选 MCP 工具调用失败（MCP tool returned an error）
+            # 后 SDK 陷入等待超时；技能构建全走 skill_tools/bash（脚本内自连 mcp-gateway 直连），
+            # Agent 主循环不需要 MCP 工具。
             agent = Agent(
                 name=task.agent_name or cfg.get("agent_name") or "gateway-agent",
                 instructions=instructions,
                 model=agent_model,
                 tools=tools if tools else None,
-                mcp_servers=list(manager.active_servers),
+                mcp_servers=[],
             )
             # 用 Runner.run()（异步）；注意 0.22.0 没有 run_async，异步入口是 run()
             return await Runner.run(
