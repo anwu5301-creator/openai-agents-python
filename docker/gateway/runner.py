@@ -78,6 +78,37 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
     # → 注入 WEKNORA_SKILL，技能脚本/agent 用指定技能（默认 supply-management-policy-compiler）
     if cfg.get("skill"):
         os.environ["WEKNORA_SKILL"] = str(cfg["skill"])
+    # 任务级技能包（1A，2026-10-01）：kb_compilation 把技能 ZIP(base64) 随任务下发，
+    # 网关临时解压到 per-task 目录并提供给 skill 工具（list/load/run），执行完清理。
+    # 技能文件不再持久落在网关侧——网关只是无状态执行器。
+    task_skill_zips: list[bytes] = []
+    _raw_skill_zip = cfg.get("skill_zip_base64") or cfg.get("skill_zip")
+    if _raw_skill_zip:
+        if isinstance(_raw_skill_zip, str):
+            import base64
+
+            task_skill_zips.append(base64.b64decode(_raw_skill_zip))
+        elif isinstance(_raw_skill_zip, list):
+            import base64
+
+            for item in _raw_skill_zip:
+                task_skill_zips.append(
+                    base64.b64decode(item) if isinstance(item, str) else bytes(item)
+                )
+        elif isinstance(_raw_skill_zip, (bytes, bytearray)):
+            task_skill_zips.append(bytes(_raw_skill_zip))
+    if task_skill_zips:
+        from .skill_tool import install_task_skill_zip, set_task_skills
+
+        specs = []
+        for i, data in enumerate(task_skill_zips):
+            try:
+                specs.extend(install_task_skill_zip(data, f"{task_id}-{i}"))
+            except ValueError as e:
+                logger.log("warn", "task_skill_zip_invalid", {"task_id": task_id, "error": str(e)})
+        if specs:
+            set_task_skills({s.name: s for s in specs})
+            logger.log("info", "task_skill_loaded", {"task_id": task_id, "skills": [s.name for s in specs]})
     tools = list((agent_cfg.skill_tools if agent_cfg else []))
     instructions = task.instructions or cfg.get("instructions") or "你是一个通用助手。"
     if tools:
@@ -101,8 +132,14 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
 
         from .mcp_config import build_servers, load_mcp_config
 
-        # 每个任务从配置重建 server 对象（保证 session 隔离）
-        server_list = build_servers(load_mcp_config(config.MCP_CONFIG_PATH))
+        # 每个任务从配置重建 server 对象（保证 session 隔离）。
+        # 2A（2026-10-01）：任务级 MCP 配置（cfg.mcp_servers，kb_compilation 下发）
+        # 优先于容器内配置文件——网关无状态，配置随任务走；未传则回退容器文件。
+        _task_mcps = cfg.get("mcp_servers")
+        if isinstance(_task_mcps, list) and _task_mcps:
+            server_list = build_servers([dict(i) for i in _task_mcps])
+        else:
+            server_list = build_servers(load_mcp_config(config.MCP_CONFIG_PATH))
         async with MCPServerManager(server_list) as manager:
             # 主 Agent 进程也用任务级模型（2026-09-23，WEK-46 主进程侧）：
             # WeKnora 按知识库绑定模型随任务传入 model/base_url/api_key →
@@ -148,6 +185,8 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
     error_detail: str | None = None
     output_text: str | None = None
     cancelled = False
+    # 任务级技能临时目录句柄（1A）：无论成败，finally 里清理并解除 registry 覆盖
+    _task_skills_loaded = bool(task_skill_zips)
     # SDK trace id：trace 存储（/traces/{id}）按 OpenAI-Agents 的 trace_id 建索引，
     # 而 task.trace_id 是业务 run id（gateway-run-xxx），两者此前没有任何关联，
     # 导致按 task.trace_id 查 trace 必然 404。这里显式开一个 trace 作用域，
@@ -202,6 +241,15 @@ async def run_task(task_id: str, agent_cfg: AgentConfig | None = None) -> None:
         except m.IllegalStatusTransition:
             # 极端：已取消后又被 worker 迟到写入；仅记日志，不再覆盖状态。
             logger.log("warn", "task_status_conflict", {"task_id": task_id})
+        # 任务级技能（1A）执行完即删：解除 registry 覆盖 + 删除临时目录
+        if _task_skills_loaded:
+            try:
+                from .skill_tool import cleanup_task_skills
+
+                cleanup_task_skills(task_id)
+                logger.log("info", "task_skill_cleaned", {"task_id": task_id})
+            except Exception:  # noqa: BLE001
+                logger.log("warn", "task_skill_cleanup_failed", {"task_id": task_id})
 
     # 进度/完成回执都经由日志层 push（业务侧通过 /tasks/{id} 或订阅事件获得）
     logger.log("info", "task_finished", {"task_id": task_id, "status": task.status})

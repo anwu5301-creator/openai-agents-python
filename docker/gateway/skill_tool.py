@@ -11,6 +11,7 @@ tools 通过全局注册表取得扫描结果，每次 agent 构造时传入。
 
 from __future__ import annotations
 
+import contextvars
 import io
 import os
 import re
@@ -27,6 +28,26 @@ from .skill_loader import SkillSpec, scan_skills
 
 # 全局 skill 注册表：在 app 启动时 refresh_skill_registry() 填充，供 tools 闭包读取。
 _registry: dict[str, SkillSpec] = {}
+
+# 任务级技能覆盖（1A：技能 ZIP 随任务下发，网关临时解压执行完即删）。
+# contextvar 保证 TaskPool 并发下各任务互不干扰——每任务在自己的协程上下文里
+# set 任务级 registry，闭包读取时优先任务级，否则回退全局 registry。
+_task_registry: contextvars.ContextVar[dict[str, SkillSpec] | None] = (
+    contextvars.ContextVar("task_skill_registry", default=None)
+)
+
+
+def set_task_skills(specs: dict[str, SkillSpec] | None) -> None:
+    """Set the per-task skill registry (None = clear). Called by runner at
+    task start/end; the tools below read task-level first."""
+    _task_registry.set(specs)
+
+
+def _effective_registry() -> dict[str, SkillSpec]:
+    task_specs = _task_registry.get()
+    if task_specs is not None:
+        return task_specs
+    return _registry
 
 
 def refresh_skill_registry() -> None:
@@ -60,7 +81,7 @@ def list_skill_specs() -> list[dict]:
             "description": s.description,
             "scripts": s.scripts,
         }
-        for s in sorted(_registry.values(), key=lambda x: x.name)
+        for s in sorted(_effective_registry().values(), key=lambda x: x.name)
     ]
 
 
@@ -269,10 +290,11 @@ def build_skill_tools() -> list[Any]:
     @function_tool
     def list_skills(tag: str | None = None) -> str:
         """列出当前可用的所有技能及其用途。tag 可传如 'devops' 过滤；模型据此选择要用的技能。"""
-        if not _registry:
+        registry = _effective_registry()
+        if not registry:
             return "当前没有可用技能（skills 目录为空或未扫描）。"
         lines = []
-        for spec in sorted(_registry.values(), key=lambda s: s.name):
+        for spec in sorted(registry.values(), key=lambda s: s.name):
             if tag and tag not in spec.tags:
                 continue
             scripts = f"scripts: {', '.join(spec.scripts)}" if spec.scripts else ""
@@ -282,7 +304,7 @@ def build_skill_tools() -> list[Any]:
     @function_tool
     def load_skill(skill_name: str) -> str:
         """读取一个技能的完整操作指引(SKILL.md 正文)。调用前应先 list_skills 确定技能名。"""
-        spec = _registry.get(skill_name)
+        spec = _effective_registry().get(skill_name)
         if spec is None:
             return f"技能不存在: {skill_name}。可用技能见 list_skills。"
         head = f"# 技能 {spec.name}\n"
@@ -293,7 +315,7 @@ def build_skill_tools() -> list[Any]:
     @function_tool
     def run_skill_script(skill_name: str, script: str, args: list[str] | None = None) -> str:
         """运行某技能 scripts/ 目录下的 Python 脚本并返回其 stdout/stderr（非交互、超时控制）。"""
-        spec = _registry.get(skill_name)
+        spec = _effective_registry().get(skill_name)
         if spec is None:
             return f"技能不存在: {skill_name}。"
         script_path = spec.path / "scripts" / script
@@ -345,3 +367,69 @@ def build_skill_tools() -> list[Any]:
 
 def sys_executable() -> str:
     return os.environ.get("PYTHON", "python3")
+
+
+def install_task_skill_zip(data: bytes, task_id: str) -> list[SkillSpec]:
+    """Extract a task-level skill ZIP (1A payload) into a per-task temp dir
+    and return the parsed SkillSpecs.
+
+    The publisher (kb_compilation) ships the ORIGINAL upload ZIP (root
+    layout <skill>/SKILL.md); the caller wraps the returned specs via
+    set_task_skills() for the duration of the run, then clears and deletes
+    the temp dir. Nothing is written to the global install dir.
+    """
+    import tempfile
+
+    tmp_root = Path(tempfile.mkdtemp(prefix=f"gw-task-{task_id}-"))
+    specs: list[SkillSpec] = []
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+        for member in z.namelist():
+            # 路径穿越防护：clean 后必须仍落在 tmp_root 内
+            target = (tmp_root / member).resolve()
+            if not str(target).startswith(str(tmp_root.resolve())):
+                raise ValueError(f"非法技能包路径: {member}")
+            if member.endswith("/"):
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with z.open(member) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        # 兼容根级 SKILL.md 或 <skill>/SKILL.md：扫描两层
+        for skill_dir in sorted(tmp_root.iterdir()):
+            if skill_dir.is_dir() and (skill_dir / "SKILL.md").is_file():
+                spec = _parse_skill_dir(skill_dir)
+                if spec:
+                    specs.append(spec)
+            elif (tmp_root / "SKILL.md").is_file():
+                spec = _parse_skill_dir(tmp_root)
+                if spec:
+                    specs.append(spec)
+                break
+        if not specs:
+            raise ValueError("ZIP 内未找到含 SKILL.md 的技能目录")
+        for spec in specs:
+            _task_tmp_dirs.setdefault(task_id, []).append(tmp_root if len(specs) == 1 else spec.path)
+        return specs
+    except Exception:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        raise
+
+
+# 任务级技能的临时目录句柄：runner 结束清理用（task_id -> [tmp dirs]）。
+_task_tmp_dirs: dict[str, list[Path]] = {}
+
+
+def cleanup_task_skills(task_id: str) -> None:
+    """Delete temp dirs created for a task's skill ZIPs and clear the
+    task-level registry entry. Called by runner in finally."""
+    dirs = _task_tmp_dirs.pop(task_id, [])
+    for d in dirs:
+        shutil.rmtree(d, ignore_errors=True)
+    _task_registry.set(None)
+
+
+def _parse_skill_dir(skill_dir: Path) -> SkillSpec | None:
+    from .skill_loader import _parse_skill_dir as _parse
+
+    return _parse(skill_dir)
