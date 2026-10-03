@@ -226,6 +226,20 @@ def _tool_dict(tool: Any) -> dict[str, Any]:
     return {"name": str(getattr(tool, "name", "")), "description": desc[:300], "params": params}
 
 
+def _error_text(exc: BaseException, depth: int = 0) -> str:
+    """把异常压成一行可读文本；递归展开 asyncio TaskGroup 的异常组。
+
+    ExceptionGroup 的 str() 只有头部摘要（"unhandled errors in a TaskGroup (1
+    sub-exception)"），真实原因藏在子异常里，不展开页面只看到无意义的外壳。
+    """
+    inner = getattr(exc, "exceptions", None)
+    if inner and depth < 5:
+        # 去重保序：同一原因在嵌套异常组里常重复出现
+        return " | ".join(dict.fromkeys(_error_text(s, depth + 1) for s in inner))
+    detail = str(exc).strip().replace("\n", " ")
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
 async def test_item(item: dict[str, Any], timeout_s: float | None = None) -> dict[str, Any]:
     """连接单个 MCP server 并取回工具清单（页面"测试"按钮用）。绝不抛异常。"""
     t0 = time.monotonic()
@@ -254,8 +268,7 @@ async def test_item(item: dict[str, Any], timeout_s: float | None = None) -> dic
     except asyncio.TimeoutError:
         return _fail(f"连接超时（>{timeout:g}s）")
     except Exception as e:  # noqa: BLE001 - 任何连接/协议错误都要回显给页面
-        detail = str(e).strip().replace("\n", " ")[:400]
-        return _fail(f"{type(e).__name__}: {detail}" if detail else type(e).__name__)
+        return _fail(_error_text(e)[:400])
     tool_list = [_tool_dict(t) for t in tools]
     return {
         "ok": True,
