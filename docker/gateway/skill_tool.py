@@ -241,6 +241,32 @@ def get_skill_detail(skill_name: str) -> dict:
     }
 
 
+def get_skill_file_content(skill_name: str, rel_path: str) -> dict:
+    """返回技能内单个文件内容（文件树预览用）。
+
+    文本文件回 utf-8 全文（>512KB 截断标记）；二进制/解码失败回元信息。
+    """
+    if not _registry:
+        refresh_skill_registry()
+    spec = _registry.get(skill_name)
+    if spec is None:
+        raise ValueError(f"技能不存在: {skill_name}")
+    base = Path(spec.path).resolve()
+    target = (base / rel_path).resolve()
+    if not str(target).startswith(str(base) + os.sep):
+        raise ValueError(f"非法文件路径: {rel_path}")
+    if not target.is_file():
+        raise ValueError(f"文件不存在: {rel_path}")
+    size = target.stat().st_size
+    if size > 512 * 1024:
+        return {"path": rel_path, "size": size, "content": "", "truncated": True, "binary": False}
+    data = target.read_bytes()
+    try:
+        return {"path": rel_path, "size": size, "content": data.decode("utf-8"), "truncated": False, "binary": False}
+    except UnicodeDecodeError:
+        return {"path": rel_path, "size": size, "content": "", "truncated": False, "binary": True}
+
+
 def delete_skill(skill_name: str) -> dict:
     """从可写安装目录删除技能并热刷新注册表。
 

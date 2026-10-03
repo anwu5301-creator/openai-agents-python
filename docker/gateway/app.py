@@ -272,6 +272,22 @@ async def get_skill_detail_http(skill_name: str) -> dict:
     return result
 
 
+@app.get("/skills/{skill_name}/files/{file_path:path}")
+async def get_skill_file_http(skill_name: str, file_path: str) -> dict:
+    """查看技能内单个文件内容（页面文件树点击预览，路径可含 /）。
+
+    返回 {path, size, content, truncated, binary}。非法路径/不存在回 400/404。
+    """
+    from .skill_tool import get_skill_file_content
+
+    try:
+        return get_skill_file_content(skill_name, file_path)
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "不存在" in msg else 400
+        raise HTTPException(status_code=code, detail=msg) from e
+
+
 @app.delete("/skills/{skill_name}")
 async def delete_skill_http(skill_name: str) -> dict:
     """删除已安装技能（从可写安装目录移除并热刷新注册表；只读预装目录内的技能不可删）。"""
